@@ -7,6 +7,10 @@ using Brutal.ImPlotApi;
 using Brutal.Numerics;
 using Brutal.OpenGlApi;
 
+// Switch this to study another engine after adding it to StudySubjects
+// and EngineEditorStudyFactory.
+const StudySubjects CurrentStudy = StudySubjects.UnityEngine;
+
 if (!Glfw.Init())
 {
     var errorCode = Glfw.GetError(out var errorMessage);
@@ -19,7 +23,7 @@ ImPlot.SetImGuiContext(context);
 
 try
 {
-    Run(args);
+    Run(args, CurrentStudy);
 }
 finally
 {
@@ -28,8 +32,10 @@ finally
     Glfw.Terminate();
 }
 
-static void Run(string[] args)
+static void Run(string[] args, StudySubjects studySubject)
 {
+    var study = EngineEditorStudyFactory.Create(studySubject);
+
     Glfw.WindowHint(GlfwWindowHint.ContextVersionMajor, 4);
     Glfw.WindowHint(GlfwWindowHint.ContextVersionMinor, 1);
     Glfw.WindowHint(GlfwWindowHint.OpenGlProfile, Glfw.Constants.GLFW_OPENGL_CORE_PROFILE);
@@ -38,7 +44,11 @@ static void Run(string[] args)
         Glfw.WindowHint(GlfwWindowHint.OpenGlForwardCompat, 1);
 
     // Declared first so it's disposed last: the backends below need the window and its GL context.
-    using var window = Glfw.CreateWindow(new GlfwWindow.CreateInfo { Title = "Demo ImGui", Size = new int2(800, 600) });
+    using var window = Glfw.CreateWindow(new GlfwWindow.CreateInfo
+    {
+        Title = study.WindowTitle,
+        Size = new int2(1600, 900),
+    });
 
     window.MakeContextCurrent();
     Glfw.SwapInterval(1); // Wait for vsync instead of drawing as fast as possible.
@@ -55,23 +65,22 @@ static void Run(string[] args)
             handle.ShouldClose = true;
     };
 
-    ImGui.GetIO().IniFilename = null; // Don't write imgui.ini.
+    var io = ImGui.GetIO();
+    io.IniFilename = null; // Don't write imgui.ini.
+    io.ConfigFlags |= ImGuiConfigFlags.DockingEnable | ImGuiConfigFlags.NavEnableKeyboard;
 
     // Rasterize fonts with FreeType instead of the built-in stb_truetype.
-    var fonts = ImGui.GetIO().Fonts;
+    var fonts = io.Fonts;
     fonts.SetFontLoader(ImGuiFreeType.GetFontLoader());
     if (args.Length > 0)
-        fonts.AddFontFromFileTTF(args[0], 24f); // Optional: dotnet run Demo/DemoImGui.cs -- path/to/font.ttf.
+        fonts.AddFontFromFileTTF(args[0], 24f); // Optional: dotnet run -- path/to/font.ttf.
 
     using var glfwBackend = new GlfwBackend(window, GlfwBackend.ClientApi.OpenGL);
     using var openGlBackend = new OpenGlBackend();
 
-    var clicks = 0;
-    var frequency = 1f;
-    var xs = new float[200];
-    var ys = new float[200];
+    study.Setup();
 
-    OpenGl.ClearColor(float4.Rgb(0.2f, 0.3f, 0.3f));
+    OpenGl.ClearColor(float4.Rgb(0.15f, 0.15f, 0.15f));
 
     while (!window.ShouldClose)
     {
@@ -83,32 +92,7 @@ static void Run(string[] args)
         // Recycle the scratch memory that interpolated ImGui strings ($"...") use, once per frame.
         ImString.SharedStorage.Reset();
 
-        var time = (float)Glfw.Time;
-        for (var i = 0; i < xs.Length; i++)
-        {
-            xs[i] = i * 0.05f;
-            ys[i] = MathF.Sin(xs[i] * frequency + time);
-        }
-
-        ImGui.SetNextWindowSize(new float2(500, 400), ImGuiCond.FirstUseEver);
-        if (ImGui.Begin("Demo ImGui"u8))
-        {
-            ImGui.Text("Hello from Dear ImGui!"u8);
-
-            if (ImGui.Button("Click me"u8))
-                clicks++;
-            ImGui.SameLine();
-            ImGui.Text($"Clicked {clicks} times");
-
-            ImGui.SliderFloat("Frequency"u8, ref frequency, 0.1f, 5f);
-
-            if (ImPlot.BeginPlot("Sine Wave"u8, new float2(-1, -1))) // Fill the rest of the window.
-            {
-                ImPlot.PlotLine("sin(x * f + t)"u8, xs, ys);
-                ImPlot.EndPlot();
-            }
-        }
-        ImGui.End();
+        study.Draw(() => window.ShouldClose = true);
 
         ImGui.Render();
 
