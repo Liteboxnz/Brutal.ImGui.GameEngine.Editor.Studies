@@ -1,5 +1,7 @@
+using System.Runtime.InteropServices;
 using Brutal.ImGuiApi;
 using Brutal.ImGuiApi.Internal;
+using Brutal.ImGuizmoAPI;
 using Brutal.ImPlotApi;
 using Brutal.Numerics;
 
@@ -19,22 +21,35 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
     readonly List<ConsoleLine> _console = [];
     readonly float[] _fpsHistory = new float[180];
     readonly float[] _fpsAxis = new float[180];
+    readonly List<float4x4> _cubeMatrices = [];
 
     int _selectedId;
-    int _gizmoMode; // 0 move, 1 rotate, 2 scale
+    int _gizmoMode; // 0 hand, 1 move, 2 rotate, 3 scale
+    int _gizmoSpace; // 0 local, 1 world
     int _consoleFilter;
     bool _playing;
     bool _paused;
     bool _dockLayoutBuilt;
+    bool _useSnap;
     float _playTime;
     int _fpsWrite;
+    float _sceneFocusDistance = 12f;
+    float3 _sceneTarget = new(0f, 0.5f, 0f);
+    float4x4 _sceneView;
 
     public string WindowTitle => "Unity Editor — ImGui Study";
 
     public void Setup()
     {
         ApplyUnityLikeTheme();
-        Log(ConsoleSeverity.Info, "Unity editor study ready. Panels are stubs; widgets are real ImGui.");
+        _sceneView = float4x4.CreateLookAt(new float3(7f, 5.5f, -8f), _sceneTarget, new float3(0f, 1f, 0f));
+        _gizmoMode = 1;
+        var player = FindByName("Player");
+        if (player is not null)
+            _selectedId = player.Id;
+
+        Log(ConsoleSeverity.Info, "Unity editor study ready. Scene gizmos are ImGuizmo; the rest is stubbed.");
+        Log(ConsoleSeverity.Info, "Scene: W/E/R tools, Local/World, snap. MMB or Hand+LMB orbit, RMB pan, wheel zoom.");
         Log(ConsoleSeverity.Warning, "Play Mode does not run a player loop — it only advances stub animation.");
     }
 
@@ -42,8 +57,11 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
     {
         var io = ImGui.GetIO();
         var dt = io.DeltaTime;
-        TickPlayMode(dt);
+        if (!ImGuizmo.IsUsing())
+            TickPlayMode(dt);
         RecordFps(io.Framerate);
+
+        ImGuizmo.BeginFrame();
 
         DrawHostWindow(requestClose);
         DrawHierarchy();
@@ -236,6 +254,14 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
         ImGui.RadioButton("Rotate"u8, ref _gizmoMode, 2);
         ImGui.SameLine();
         ImGui.RadioButton("Scale"u8, ref _gizmoMode, 3);
+        ImGui.SameLine();
+        ImGui.TextDisabled("|"u8);
+        ImGui.SameLine();
+        ImGui.RadioButton("Local"u8, ref _gizmoSpace, 0);
+        ImGui.SameLine();
+        ImGui.RadioButton("World"u8, ref _gizmoSpace, 1);
+        ImGui.SameLine();
+        ImGui.Checkbox("Snap"u8, ref _useSnap);
 
         // Center: play / pause / step.
         var playWidth = 220f;
@@ -382,8 +408,8 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
             return;
         }
 
-        ImGui.TextDisabled($"Gizmo: {GizmoName(_gizmoMode)}  |  click-drag is not implemented");
-        DrawStubViewport(new float4(0.18f, 0.19f, 0.2f, 1f), "Scene (stub framebuffer)", showGizmos: true);
+        ImGui.TextDisabled($"Scene  |  {GizmoName(_gizmoMode)}  |  {(_gizmoSpace == 0 ? "Local" : "World")}  |  ImGuizmo");
+        Draw3DViewport(new float4(0.18f, 0.19f, 0.2f, 1f), _sceneView, sceneTools: true);
         ImGui.End();
     }
 
@@ -395,73 +421,207 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
             return;
         }
 
-        var camera = FindByName("Main Camera")?.Components.OfType<StubCameraComponent>().FirstOrDefault();
+        var cameraObject = FindByName("Main Camera");
+        var camera = cameraObject?.Components.OfType<StubCameraComponent>().FirstOrDefault();
         var fov = camera?.FieldOfView ?? 60f;
         ImGui.TextDisabled($"Display 1  |  Free Aspect  |  FOV {fov:0}  |  Scale 1x");
-        DrawStubViewport(new float4(0.12f, 0.13f, 0.14f, 1f), _playing ? "Game (playing, stub)" : "Game (edit mode, stub)", showGizmos: false);
+        Draw3DViewport(new float4(0.12f, 0.13f, 0.14f, 1f), BuildGameView(cameraObject), sceneTools: false);
         ImGui.End();
     }
 
-    void DrawStubViewport(float4 background, string caption, bool showGizmos)
+    void Draw3DViewport(float4 background, float4x4 view, bool sceneTools)
     {
         var avail = ImGui.GetContentRegionAvail();
         if (avail.X < 32f || avail.Y < 32f)
             return;
 
         var origin = ImGui.GetCursorScreenPos();
-        ImGui.InvisibleButton("Viewport"u8, avail);
-
         var draw = ImGui.GetWindowDrawList();
         var max = new float2(origin.X + avail.X, origin.Y + avail.Y);
         draw.AddRectFilled(origin, max, ImGui.GetColorU32(background));
 
-        DrawStubObjects(draw, origin, avail);
+        var camera = FindByName("Main Camera")?.Components.OfType<StubCameraComponent>().FirstOrDefault();
+        var projection = BuildProjection(avail.X / MathF.Max(avail.Y, 1f), camera);
 
-        if (showGizmos)
+        ImGuizmo.SetDrawlist(draw);
+        ImGuizmo.SetRect(origin.X, origin.Y, avail.X, avail.Y);
+        ImGuizmo.SetOrthographic(camera?.Orthographic ?? false);
+        ImGuizmo.DrawGrid(view, projection, float4x4.Identity, 20f);
+
+        CollectCubeMatrices();
+        if (_cubeMatrices.Count > 0)
+            ImGuizmo.DrawCubes(view, projection, CollectionsMarshal.AsSpan(_cubeMatrices));
+
+        if (sceneTools)
         {
-            var axis = new float2(origin.X + 28f, origin.Y + avail.Y - 28f);
-            draw.AddLine(axis, new float2(axis.X + 40f, axis.Y), ImGui.GetColorU32(new float4(0.85f, 0.2f, 0.2f, 1f)), 2f);
-            draw.AddLine(axis, new float2(axis.X, axis.Y - 40f), ImGui.GetColorU32(new float4(0.2f, 0.85f, 0.3f, 1f)), 2f);
-            draw.AddText(new float2(axis.X + 44f, axis.Y - 8f), ImGui.GetColorU32(ImGuiCol.Text), "X"u8);
-            draw.AddText(new float2(axis.X - 4f, axis.Y - 56f), ImGui.GetColorU32(ImGuiCol.Text), "Y"u8);
+            ManipulateSelected(view, projection);
+            HandleSceneNavigation();
+            var cubeSize = new float2(96f, 96f);
+            var cubePos = new float2(max.X - cubeSize.X - 8f, origin.Y + 8f);
+            ImGuizmo.ViewManipulate(ref _sceneView, _sceneFocusDistance, cubePos, cubeSize, 0x10101010u);
+            SyncSceneTargetFromView();
         }
 
-        draw.AddText(new float2(origin.X + 10f, origin.Y + 8f), ImGui.GetColorU32(new float4(1f, 1f, 1f, 0.65f)), caption);
+        draw.AddText(
+            new float2(origin.X + 10f, origin.Y + 8f),
+            ImGui.GetColorU32(new float4(1f, 1f, 1f, 0.65f)),
+            sceneTools ? "Scene (ImGuizmo)" : (_playing ? "Game (playing)" : "Game (edit mode)"));
     }
 
-    void DrawStubObjects(ImDrawListPtr draw, float2 origin, float2 size)
+    void ManipulateSelected(float4x4 view, float4x4 projection)
     {
-        foreach (var root in _scene.Roots)
-            DrawStubObject(draw, origin, size, root);
-    }
-
-    void DrawStubObject(ImDrawListPtr draw, float2 origin, float2 size, StubGameObject node)
-    {
-        if (!node.Active)
-        {
-            foreach (var child in node.Children)
-                DrawStubObject(draw, origin, size, child);
+        if (_gizmoMode == 0)
             return;
-        }
 
-        var renderer = node.Components.OfType<StubMeshRendererComponent>().FirstOrDefault();
-        if (renderer is not null)
+        var selected = _scene.Find(_selectedId);
+        if (selected is null)
+            return;
+
+        var operation = _gizmoMode switch
         {
-            var cx = origin.X + size.X * 0.5f + node.Position.X * 28f;
-            var cy = origin.Y + size.Y * 0.62f - node.Position.Y * 36f - node.Position.Z * 8f;
-            var w = 18f * node.Scale.X;
-            var h = 18f * node.Scale.Y;
-            var min = new float2(cx - w, cy - h);
-            var max = new float2(cx + w, cy + h);
-            var color = renderer.Color;
-            draw.AddRectFilled(min, max, ImGui.GetColorU32(new float4(color.X, color.Y, color.Z, 1f)), 3f);
+            2 => ImGuizmoOperation.Rotate,
+            3 => ImGuizmoOperation.Scale,
+            _ => ImGuizmoOperation.Translate,
+        };
+        var mode = _gizmoSpace == 0 ? ImGuizmoMode.Local : ImGuizmoMode.World;
+        float3? snap = !_useSnap
+            ? null
+            : _gizmoMode switch
+            {
+                2 => new float3(15f, 15f, 15f),
+                3 => new float3(0.1f, 0.1f, 0.1f),
+                _ => new float3(0.5f, 0.5f, 0.5f),
+            };
 
-            if (node.Id == _selectedId)
-                draw.AddRect(min, max, ImGui.GetColorU32(new float4(0.4f, 0.75f, 1f, 1f)), 3f, ImDrawFlags.None, 2f);
+        var matrix = ImGuizmo.RecomposeMatrixFromComponents(selected.Position, selected.Rotation, selected.Scale);
+        ImGuizmo.PushId(selected.Id);
+        if (ImGuizmo.Manipulate(view, projection, operation, mode, ref matrix, snap))
+        {
+            ImGuizmo.DecomposeMatrixToComponents(matrix, out var translation, out var rotation, out var scale);
+            selected.Position = translation;
+            selected.Rotation = rotation;
+            selected.Scale = scale;
         }
+
+        ImGuizmo.PopId();
+    }
+
+    void HandleSceneNavigation()
+    {
+        if (!ImGui.IsWindowHovered() || ImGuizmo.IsUsing() || ImGuizmo.IsUsingViewManipulate() || ImGuizmo.IsViewManipulateHovered())
+            return;
+
+        var io = ImGui.GetIO();
+        var orbit = ImGui.IsMouseDragging(ImGuiMouseButton.Middle)
+                    || (_gizmoMode == 0 && ImGui.IsMouseDragging(ImGuiMouseButton.Left));
+        if (orbit)
+            OrbitSceneCamera(io.MouseDelta);
+        else if (ImGui.IsMouseDragging(ImGuiMouseButton.Right))
+            PanSceneCamera(io.MouseDelta);
+
+        if (io.MouseWheel != 0f)
+        {
+            _sceneFocusDistance = Math.Clamp(_sceneFocusDistance * (1f - io.MouseWheel * 0.1f), 1.5f, 80f);
+            RebuildSceneView();
+        }
+    }
+
+    void OrbitSceneCamera(float2 mouseDelta)
+    {
+        var eye = SceneCameraPosition();
+        var offset = eye - _sceneTarget;
+        var distance = MathF.Max(0.5f, offset.Length());
+        var yaw = MathF.Atan2(offset.X, offset.Z);
+        var pitch = MathF.Asin(Math.Clamp(offset.Y / distance, -1f, 1f));
+        yaw += mouseDelta.X * 0.005f;
+        pitch = Math.Clamp(pitch + mouseDelta.Y * 0.005f, -1.4f, 1.4f);
+        var direction = new float3(
+            MathF.Sin(yaw) * MathF.Cos(pitch),
+            MathF.Sin(pitch),
+            MathF.Cos(yaw) * MathF.Cos(pitch));
+        _sceneFocusDistance = distance;
+        _sceneView = float4x4.CreateLookAt(_sceneTarget + direction * distance, _sceneTarget, new float3(0f, 1f, 0f));
+    }
+
+    void PanSceneCamera(float2 mouseDelta)
+    {
+        if (!float4x4.Invert(_sceneView, out var inverse))
+            return;
+
+        var right = new float3(inverse.X.X, inverse.X.Y, inverse.X.Z);
+        var up = new float3(inverse.Y.X, inverse.Y.Y, inverse.Y.Z);
+        var speed = _sceneFocusDistance * 0.0015f;
+        _sceneTarget -= right * (mouseDelta.X * speed) + up * (mouseDelta.Y * speed);
+        RebuildSceneView();
+    }
+
+    void RebuildSceneView()
+    {
+        var eye = SceneCameraPosition();
+        var offset = eye - _sceneTarget;
+        if (offset.LengthSquared() < 0.0001f)
+            offset = new float3(0f, 0.3f, -1f);
+        var direction = float3.Normalize(offset);
+        _sceneView = float4x4.CreateLookAt(_sceneTarget + direction * _sceneFocusDistance, _sceneTarget, new float3(0f, 1f, 0f));
+    }
+
+    void SyncSceneTargetFromView()
+    {
+        if (!float4x4.Invert(_sceneView, out var inverse))
+            return;
+
+        var eye = inverse.Translation;
+        var forward = float3.Normalize(new float3(-inverse.Z.X, -inverse.Z.Y, -inverse.Z.Z));
+        _sceneTarget = eye + forward * _sceneFocusDistance;
+    }
+
+    float3 SceneCameraPosition()
+    {
+        float4x4.Invert(_sceneView, out var inverse);
+        return inverse.Translation;
+    }
+
+    float4x4 BuildGameView(StubGameObject? cameraObject)
+    {
+        if (cameraObject is null)
+            return _sceneView;
+
+        var yaw = cameraObject.Rotation.Y * (MathF.PI / 180f);
+        var pitch = cameraObject.Rotation.X * (MathF.PI / 180f);
+        var forward = new float3(
+            MathF.Sin(yaw) * MathF.Cos(pitch),
+            -MathF.Sin(pitch),
+            MathF.Cos(yaw) * MathF.Cos(pitch));
+        if (forward.LengthSquared() < 0.0001f)
+            forward = new float3(0f, 0f, 1f);
+        return float4x4.CreateLookAt(cameraObject.Position, cameraObject.Position + float3.Normalize(forward), new float3(0f, 1f, 0f));
+    }
+
+    static float4x4 BuildProjection(float aspect, StubCameraComponent? camera)
+    {
+        var near = camera?.NearClip ?? 0.3f;
+        var far = camera?.FarClip ?? 1000f;
+        if (camera?.Orthographic == true)
+            return float4x4.CreateOrthographic(10f * aspect, 10f, near, far);
+
+        var fov = (camera?.FieldOfView ?? 60f) * (MathF.PI / 180f);
+        return float4x4.CreatePerspectiveFieldOfView(fov, aspect, near, far);
+    }
+
+    void CollectCubeMatrices()
+    {
+        _cubeMatrices.Clear();
+        foreach (var root in _scene.Roots)
+            CollectCubeMatrices(root);
+    }
+
+    void CollectCubeMatrices(StubGameObject node)
+    {
+        if (node.Active && node.Components.OfType<StubMeshRendererComponent>().Any())
+            _cubeMatrices.Add(ImGuizmo.RecomposeMatrixFromComponents(node.Position, node.Rotation, node.Scale));
 
         foreach (var child in node.Children)
-            DrawStubObject(draw, origin, size, child);
+            CollectCubeMatrices(child);
     }
 
     static string GizmoName(int mode) => mode switch

@@ -15,6 +15,7 @@
     <PackageReference Include="Ahwoo.BRUTAL.ImGui.FreeType" Version="2026.10.3" />
     <PackageReference Include="Ahwoo.BRUTAL.ImPlot" Version="2026.10.3" />
     <PackageReference Include="Ahwoo.BRUTAL.Numerics" Version="2026.10.2" />
+    <PackageReference Include="LiteboxNZ.Brutal.ImGuizmo" Version="1.0.0" />
   </ItemGroup>
 
 </Project>
