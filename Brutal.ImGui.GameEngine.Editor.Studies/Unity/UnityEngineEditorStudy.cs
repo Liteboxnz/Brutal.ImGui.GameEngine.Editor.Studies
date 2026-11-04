@@ -53,7 +53,7 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
         Log(ConsoleSeverity.Warning, "Play Mode does not run a player loop — it only advances stub animation.");
     }
 
-    public void Draw(Action requestClose)
+    public void Draw(Action requestClose, Action returnToLauncher)
     {
         var io = ImGui.GetIO();
         var dt = io.DeltaTime;
@@ -63,7 +63,7 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
 
         ImGuizmo.BeginFrame();
 
-        DrawHostWindow(requestClose);
+        DrawHostWindow(requestClose, returnToLauncher);
         DrawHierarchy();
         DrawSceneView();
         DrawGameView();
@@ -123,7 +123,7 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
         _fpsWrite = (_fpsWrite + 1) % _fpsHistory.Length;
     }
 
-    void DrawHostWindow(Action requestClose)
+    void DrawHostWindow(Action requestClose, Action returnToLauncher)
     {
         var viewport = ImGui.GetMainViewport();
         ImGui.SetNextWindowPos(viewport.WorkPos);
@@ -147,7 +147,7 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
         ImGui.Begin("Unity Editor Host"u8, hostFlags);
         ImGui.PopStyleVar(3);
 
-        DrawMainMenu(requestClose);
+        DrawMainMenu(requestClose, returnToLauncher);
         DrawToolbar();
 
         var dockspaceId = ImGui.GetID("UnityDockSpace"u8);
@@ -161,7 +161,7 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
         ImGui.End();
     }
 
-    void DrawMainMenu(Action requestClose)
+    void DrawMainMenu(Action requestClose, Action returnToLauncher)
     {
         if (!ImGui.BeginMenuBar())
             return;
@@ -178,6 +178,8 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
             if (ImGui.MenuItem("Build Settings..."u8))
                 Log(ConsoleSeverity.Warning, "Build Settings are not implemented.");
             ImGui.Separator();
+            if (ImGui.MenuItem("Back to Study List"u8))
+                returnToLauncher();
             if (ImGui.MenuItem("Exit"u8, "Alt+F4"u8))
                 requestClose();
             ImGui.EndMenu();

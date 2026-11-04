@@ -7,10 +7,6 @@ using Brutal.ImPlotApi;
 using Brutal.Numerics;
 using Brutal.OpenGlApi;
 
-// Switch this to study another engine after adding it to StudySubjects
-// and EngineEditorStudyFactory.
-const StudySubjects CurrentStudy = StudySubjects.UnityEngine;
-
 if (!Glfw.Init())
 {
     var errorCode = Glfw.GetError(out var errorMessage);
@@ -23,7 +19,7 @@ ImPlot.SetImGuiContext(context);
 
 try
 {
-    Run(args, CurrentStudy);
+    Run(args);
 }
 finally
 {
@@ -32,9 +28,9 @@ finally
     Glfw.Terminate();
 }
 
-static void Run(string[] args, StudySubjects studySubject)
+static void Run(string[] args)
 {
-    var study = EngineEditorStudyFactory.Create(studySubject);
+    var launcher = new StudySelectionScreen();
 
     Glfw.WindowHint(GlfwWindowHint.ContextVersionMajor, 4);
     Glfw.WindowHint(GlfwWindowHint.ContextVersionMinor, 1);
@@ -46,7 +42,7 @@ static void Run(string[] args, StudySubjects studySubject)
     // Declared first so it's disposed last: the backends below need the window and its GL context.
     using var window = Glfw.CreateWindow(new GlfwWindow.CreateInfo
     {
-        Title = study.WindowTitle,
+        Title = launcher.WindowTitle,
         Size = new int2(1600, 900),
     });
 
@@ -78,9 +74,10 @@ static void Run(string[] args, StudySubjects studySubject)
     using var glfwBackend = new GlfwBackend(window, GlfwBackend.ClientApi.OpenGL);
     using var openGlBackend = new OpenGlBackend();
 
-    study.Setup();
+    launcher.Setup();
+    IEngineEditorStudy? study = null;
 
-    OpenGl.ClearColor(float4.Rgb(0.15f, 0.15f, 0.15f));
+    OpenGl.ClearColor(float4.Rgb(0.1f, 0.1f, 0.12f));
 
     while (!window.ShouldClose)
     {
@@ -92,7 +89,28 @@ static void Run(string[] args, StudySubjects studySubject)
         // Recycle the scratch memory that interpolated ImGui strings ($"...") use, once per frame.
         ImString.SharedStorage.Reset();
 
-        study.Draw(() => window.ShouldClose = true);
+        if (study is null)
+        {
+            launcher.Draw(
+                subject =>
+                {
+                    study = EngineEditorStudyFactory.Create(subject);
+                    window.Title = study.WindowTitle;
+                    study.Setup();
+                },
+                () => window.ShouldClose = true);
+        }
+        else
+        {
+            study.Draw(
+                () => window.ShouldClose = true,
+                () =>
+                {
+                    study = null;
+                    window.Title = launcher.WindowTitle;
+                    launcher.Setup();
+                });
+        }
 
         ImGui.Render();
 
