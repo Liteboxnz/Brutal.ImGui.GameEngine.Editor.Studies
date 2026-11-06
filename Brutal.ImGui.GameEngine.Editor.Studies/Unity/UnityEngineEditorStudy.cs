@@ -20,7 +20,6 @@ sealed class UnityEngineEditorStudy
     readonly UnityStubScene _scene = UnityStubScene.CreateSampleScene();
     readonly List<ConsoleLine> _console = [];
     readonly float[] _fpsHistory = new float[180];
-    readonly float[] _fpsAxis = new float[180];
     readonly List<float4x4> _cubeMatrices = [];
 
     int _selectedId;
@@ -34,6 +33,7 @@ sealed class UnityEngineEditorStudy
     bool _useSnap;
     float _playTime;
     int _fpsWrite;
+    int _fpsCount;
     float _sceneFocusDistance = 12f;
     float3 _sceneTarget = new(0f, 0.5f, 0f);
     float4x4 _sceneView;
@@ -128,8 +128,9 @@ sealed class UnityEngineEditorStudy
     void RecordFps(float fps)
     {
         _fpsHistory[_fpsWrite] = fps;
-        _fpsAxis[_fpsWrite] = _fpsWrite;
         _fpsWrite = (_fpsWrite + 1) % _fpsHistory.Length;
+        if (_fpsCount < _fpsHistory.Length)
+            _fpsCount++;
     }
 
     void DrawHostWindow(Action requestClose)
@@ -249,32 +250,37 @@ sealed class UnityEngineEditorStudy
         ImGui.SameLine();
         ImGui.Checkbox("Snap"u8, ref _useSnap);
 
-        // Center: play / pause / step.
-        var playWidth = 220f;
+        // Center: Unity-style play / pause / step icons.
+        var iconSize = new float2(ImGui.GetFrameHeight());
+        var playWidth = iconSize.X * 3f + 4f;
         ImGui.SameLine();
         ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX() + 16f, (ImGui.GetWindowWidth() - playWidth) * 0.5f));
 
-        PushPlayColor(_playing && !_paused);
-        if (ImGui.Button(_playing ? "Stop"u8 : "Play"u8))
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new float2(2f, 0f));
+        if (DrawPlayControlButton("##Play"u8, iconSize, enabled: true, _playing && !_paused, PlayControlIcon.Play))
             TogglePlay();
-        ImGui.PopStyleColor();
+        ImGui.SetItemTooltip(_playing ? "Stop"u8 : "Play"u8);
+
         ImGui.SameLine();
         ImGui.BeginDisabled(!_playing);
-        if (ImGui.Button(_paused ? "Resume"u8 : "Pause"u8))
+        if (DrawPlayControlButton("##Pause"u8, iconSize, _playing, _paused, PlayControlIcon.Pause))
         {
             _paused = !_paused;
             Log(ConsoleSeverity.Info, _paused ? "Paused (stub)" : "Resumed (stub)");
         }
 
+        ImGui.SetItemTooltip("Pause"u8);
         ImGui.SameLine();
-        if (ImGui.Button("Step"u8))
+        if (DrawPlayControlButton("##Step"u8, iconSize, _playing, false, PlayControlIcon.Step))
         {
             _paused = true;
             TickPlayMode(1f / 60f);
             Log(ConsoleSeverity.Info, "Frame step (stub)");
         }
 
+        ImGui.SetItemTooltip("Step"u8);
         ImGui.EndDisabled();
+        ImGui.PopStyleVar();
 
         ImGui.SameLine();
         ImGui.TextDisabled($"  {_scene.Name}{(UnsavedMarker())}");
@@ -284,13 +290,76 @@ sealed class UnityEngineEditorStudy
 
     string UnsavedMarker() => _playing ? "  [Playing]" : "";
 
-    void PushPlayColor(bool active)
+    static bool DrawPlayControlButton(ImString id, float2 size, bool enabled, bool active, PlayControlIcon icon)
     {
-        var color = active
-            ? new float4(0.25f, 0.45f, 0.22f, 1f)
-            : new float4(0.28f, 0.28f, 0.28f, 1f);
-        ImGui.PushStyleColor(ImGuiCol.Button, color);
+        var pressed = ImGui.InvisibleButton(id, size);
+        var min = ImGui.GetItemRectMin();
+        var max = ImGui.GetItemRectMax();
+        var hovered = ImGui.IsItemHovered();
+        var held = ImGui.IsItemActive();
+
+        var background = active
+            ? new float4(0.18f, 0.42f, 0.72f, 1f)
+            : held
+                ? new float4(0.2f, 0.2f, 0.2f, 1f)
+                : hovered && enabled
+                    ? new float4(0.34f, 0.34f, 0.34f, 1f)
+                    : new float4(0.26f, 0.26f, 0.26f, 1f);
+        var glyph = !enabled
+            ? new float4(0.5f, 0.5f, 0.5f, 1f)
+            : new float4(0.92f, 0.92f, 0.92f, 1f);
+
+        var draw = ImGui.GetWindowDrawList();
+        draw.AddRectFilled(min, max, Color(background), 3f);
+        DrawPlayControlIcon(draw, min, max, icon, Color(glyph));
+        return pressed;
     }
+
+    static void DrawPlayControlIcon(ImDrawListPtr draw, float2 min, float2 max, PlayControlIcon icon, ImColor8 color)
+    {
+        var center = (min + max) * 0.5f;
+        var extent = (max.X - min.X) * 0.28f;
+
+        switch (icon)
+        {
+            case PlayControlIcon.Pause:
+            {
+                var barWidth = extent * 0.38f;
+                var gap = extent * 0.42f;
+                var top = center.Y - extent;
+                var bottom = center.Y + extent;
+                draw.AddRectFilled(new float2(center.X - gap - barWidth, top), new float2(center.X - gap, bottom), color, 1f);
+                draw.AddRectFilled(new float2(center.X + gap, top), new float2(center.X + gap + barWidth, bottom), color, 1f);
+                break;
+            }
+            case PlayControlIcon.Step:
+            {
+                var left = center.X - extent * 1.05f;
+                var right = center.X + extent * 0.45f;
+                draw.AddTriangleFilled(
+                    new float2(left, center.Y - extent),
+                    new float2(left, center.Y + extent),
+                    new float2(right, center.Y),
+                    color);
+                var barLeft = center.X + extent * 0.62f;
+                draw.AddRectFilled(
+                    new float2(barLeft, center.Y - extent),
+                    new float2(barLeft + extent * 0.38f, center.Y + extent),
+                    color,
+                    1f);
+                break;
+            }
+            default:
+                draw.AddTriangleFilled(
+                    new float2(center.X - extent * 0.75f, center.Y - extent),
+                    new float2(center.X - extent * 0.75f, center.Y + extent),
+                    new float2(center.X + extent, center.Y),
+                    color);
+                break;
+        }
+    }
+
+    static ImColor8 Color(float4 value) => (ImColor8)ImGui.GetColorU32(value);
 
     void TogglePlay()
     {
@@ -828,10 +897,14 @@ sealed class UnityEngineEditorStudy
             return;
         }
 
-        ImGui.Text($"CPU  {fps:0.0} FPS   |   Play time {_playTime:0.00}s   |   modules are stubbed");
+        ImGui.Text($"CPU  {fps:0.0} FPS   |   Play time {_playTime:0.00}s   |   last {_fpsCount} frames");
         if (ImPlot.BeginPlot("Frame rate"u8, new float2(-1f, -1f)))
         {
-            ImPlot.PlotLine("FPS"u8, _fpsAxis, _fpsHistory);
+            var count = Math.Max(_fpsCount, 1);
+            ImPlot.SetupAxisLimits(ImAxis.X1, 0, count - 1, ImPlotCond.Always);
+            ImPlot.SetupAxis(ImAxis.Y1, "FPS"u8, ImPlotAxisFlags.AutoFit);
+            var offset = _fpsCount == _fpsHistory.Length ? _fpsWrite : 0;
+            ImPlot.PlotLine("FPS"u8, _fpsHistory.AsSpan(0, count), 1.0, 0.0, ImPlotLineFlags.None, offset);
             ImPlot.EndPlot();
         }
 
@@ -893,5 +966,12 @@ sealed class UnityEngineEditorStudy
         Info = 1,
         Warning = 2,
         Error = 3,
+    }
+
+    enum PlayControlIcon
+    {
+        Play,
+        Pause,
+        Step,
     }
 }
