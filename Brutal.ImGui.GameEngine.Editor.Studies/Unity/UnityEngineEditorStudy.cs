@@ -605,14 +605,17 @@ sealed class UnityEngineEditorStudy
         var projection = sceneOrtho
             ? float4x4.CreateOrthographic(_sceneFocusDistance * aspect, _sceneFocusDistance, camera?.NearClip ?? 0.3f, camera?.FarClip ?? 1000f)
             : BuildProjection(aspect, camera);
-        var grid = sceneOrtho
-            ? float4x4.CreateRotationX(-MathF.PI / 2f)
-            : float4x4.Identity;
 
         ImGuizmo.SetDrawlist(draw);
         ImGuizmo.SetRect(origin.X, origin.Y, avail.X, avail.Y);
         ImGuizmo.SetOrthographic(sceneOrtho || (!sceneTools && (camera?.Orthographic ?? false)));
-        ImGuizmo.DrawGrid(view, projection, grid, 20f);
+        if (sceneTools)
+        {
+            var grid = sceneOrtho
+                ? float4x4.CreateRotationX(-MathF.PI / 2f)
+                : float4x4.Identity;
+            ImGuizmo.DrawGrid(view, projection, grid, 20f);
+        }
 
         CollectCubeMatrices();
         if (_cubeMatrices.Count > 0)
