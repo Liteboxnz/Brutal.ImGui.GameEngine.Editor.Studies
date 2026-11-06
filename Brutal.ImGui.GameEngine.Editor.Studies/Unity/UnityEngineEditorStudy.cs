@@ -10,7 +10,7 @@ using Brutal.Numerics;
 /// toolbar, Hierarchy, Scene/Game, Inspector, Project, Console, Profiler.
 /// Engine behaviour is stubbed so you can study the ImGui calls in isolation.
 /// </summary>
-sealed class UnityEngineEditorStudy : IEngineEditorStudy
+sealed class UnityEngineEditorStudy
 {
     static readonly string[] Tags = ["Untagged", "Respawn", "Finish", "EditorOnly", "MainCamera", "Player", "GameController"];
     static readonly string[] Layers = ["Default", "TransparentFX", "Ignore Raycast", "Water", "UI"];
@@ -30,6 +30,7 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
     bool _playing;
     bool _paused;
     bool _dockLayoutBuilt;
+    bool _selectSceneTab;
     bool _useSnap;
     float _playTime;
     int _fpsWrite;
@@ -53,7 +54,7 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
         Log(ConsoleSeverity.Warning, "Play Mode does not run a player loop — it only advances stub animation.");
     }
 
-    public void Draw(Action requestClose, Action returnToLauncher)
+    public void Draw(Action requestClose)
     {
         var io = ImGui.GetIO();
         var dt = io.DeltaTime;
@@ -63,7 +64,7 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
 
         ImGuizmo.BeginFrame();
 
-        DrawHostWindow(requestClose, returnToLauncher);
+        DrawHostWindow(requestClose);
         DrawHierarchy();
         DrawSceneView();
         DrawGameView();
@@ -71,6 +72,14 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
         DrawProject();
         DrawConsole();
         DrawProfiler(io.Framerate);
+
+        // DockBuilder selects the last window docked into a node. Focus Scene after
+        // every panel has been submitted so the center tabs open on Scene, not Profiler.
+        if (_selectSceneTab)
+        {
+            ImGui.SetWindowFocus("Scene"u8);
+            _selectSceneTab = false;
+        }
     }
 
     void TickPlayMode(float dt)
@@ -123,7 +132,7 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
         _fpsWrite = (_fpsWrite + 1) % _fpsHistory.Length;
     }
 
-    void DrawHostWindow(Action requestClose, Action returnToLauncher)
+    void DrawHostWindow(Action requestClose)
     {
         var viewport = ImGui.GetMainViewport();
         ImGui.SetNextWindowPos(viewport.WorkPos);
@@ -147,7 +156,7 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
         ImGui.Begin("Unity Editor Host"u8, hostFlags);
         ImGui.PopStyleVar(3);
 
-        DrawMainMenu(requestClose, returnToLauncher);
+        DrawMainMenu(requestClose);
         DrawToolbar();
 
         var dockspaceId = ImGui.GetID("UnityDockSpace"u8);
@@ -155,13 +164,14 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
         {
             BuildUnityDockLayout(dockspaceId, ImGui.GetContentRegionAvail());
             _dockLayoutBuilt = true;
+            _selectSceneTab = true;
         }
 
         ImGui.DockSpace(dockspaceId);
         ImGui.End();
     }
 
-    void DrawMainMenu(Action requestClose, Action returnToLauncher)
+    void DrawMainMenu(Action requestClose)
     {
         if (!ImGui.BeginMenuBar())
             return;
@@ -175,11 +185,6 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
             if (ImGui.MenuItem("Save"u8, "Ctrl+S"u8))
                 Log(ConsoleSeverity.Info, $"Saved scene '{_scene.Name}' (stub)");
             ImGui.Separator();
-            if (ImGui.MenuItem("Build Settings..."u8))
-                Log(ConsoleSeverity.Warning, "Build Settings are not implemented.");
-            ImGui.Separator();
-            if (ImGui.MenuItem("Back to Study List"u8))
-                returnToLauncher();
             if (ImGui.MenuItem("Exit"u8, "Alt+F4"u8))
                 requestClose();
             ImGui.EndMenu();
@@ -215,27 +220,6 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
                 ImGui.EndMenu();
             }
 
-            ImGui.EndMenu();
-        }
-
-        if (ImGui.BeginMenu("Component"u8))
-        {
-            ImGui.MenuItem("Add Component is stubbed on the Inspector."u8, ImString.Empty, false, false);
-            ImGui.EndMenu();
-        }
-
-        if (ImGui.BeginMenu("Window"u8))
-        {
-            ImGui.MenuItem("General/Hierarchy"u8);
-            ImGui.MenuItem("General/Inspector"u8);
-            ImGui.MenuItem("General/Console"u8);
-            ImGui.MenuItem("Analysis/Profiler"u8);
-            ImGui.EndMenu();
-        }
-
-        if (ImGui.BeginMenu("Help"u8))
-        {
-            ImGui.TextDisabled("This is an ImGui study, not Unity."u8);
             ImGui.EndMenu();
         }
 
@@ -348,9 +332,9 @@ sealed class UnityEngineEditorStudy : IEngineEditorStudy
 
         ImGui.Internal.DockBuilderDockWindow("Hierarchy"u8, dockLeft);
         ImGui.Internal.DockBuilderDockWindow("Inspector"u8, dockRight);
-        ImGui.Internal.DockBuilderDockWindow("Scene"u8, dockMain);
         ImGui.Internal.DockBuilderDockWindow("Game"u8, dockMain);
         ImGui.Internal.DockBuilderDockWindow("Profiler"u8, dockMain);
+        ImGui.Internal.DockBuilderDockWindow("Scene"u8, dockMain);
         ImGui.Internal.DockBuilderDockWindow("Project"u8, dockProject);
         ImGui.Internal.DockBuilderDockWindow("Console"u8, dockConsole);
         ImGui.Internal.DockBuilderFinish(dockspaceId);

@@ -30,7 +30,7 @@ finally
 
 static void Run(string[] args)
 {
-    var launcher = new StudySelectionScreen();
+    var study = new UnityEngineEditorStudy();
 
     Glfw.WindowHint(GlfwWindowHint.ContextVersionMajor, 4);
     Glfw.WindowHint(GlfwWindowHint.ContextVersionMinor, 1);
@@ -42,7 +42,7 @@ static void Run(string[] args)
     // Declared first so it's disposed last: the backends below need the window and its GL context.
     using var window = Glfw.CreateWindow(new GlfwWindow.CreateInfo
     {
-        Title = launcher.WindowTitle,
+        Title = study.WindowTitle,
         Size = new int2(1600, 900),
     });
 
@@ -74,10 +74,9 @@ static void Run(string[] args)
     using var glfwBackend = new GlfwBackend(window, GlfwBackend.ClientApi.OpenGL);
     using var openGlBackend = new OpenGlBackend();
 
-    launcher.Setup();
-    IEngineEditorStudy? study = null;
+    study.Setup();
 
-    OpenGl.ClearColor(float4.Rgb(0.1f, 0.1f, 0.12f));
+    OpenGl.ClearColor(float4.Rgb(0.15f, 0.15f, 0.15f));
 
     while (!window.ShouldClose)
     {
@@ -89,28 +88,7 @@ static void Run(string[] args)
         // Recycle the scratch memory that interpolated ImGui strings ($"...") use, once per frame.
         ImString.SharedStorage.Reset();
 
-        if (study is null)
-        {
-            launcher.Draw(
-                subject =>
-                {
-                    study = EngineEditorStudyFactory.Create(subject);
-                    window.Title = study.WindowTitle;
-                    study.Setup();
-                },
-                () => window.ShouldClose = true);
-        }
-        else
-        {
-            study.Draw(
-                () => window.ShouldClose = true,
-                () =>
-                {
-                    study = null;
-                    window.Title = launcher.WindowTitle;
-                    launcher.Setup();
-                });
-        }
+        study.Draw(() => window.ShouldClose = true);
 
         ImGui.Render();
 
