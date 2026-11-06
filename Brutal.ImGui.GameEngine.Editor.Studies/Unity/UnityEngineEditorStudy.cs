@@ -37,6 +37,8 @@ sealed class UnityEngineEditorStudy
     float _sceneFocusDistance = 12f;
     float3 _sceneTarget = new(0f, 0.5f, 0f);
     float4x4 _sceneView;
+    float4x4 _sceneView3D;
+    bool _scene2D;
 
     public string WindowTitle => "Unity Editor — ImGui Study";
 
@@ -233,14 +235,16 @@ sealed class UnityEngineEditorStudy
         ImGui.BeginChild("UnityToolbar"u8, new float2(0f, ImGui.GetFrameHeightWithSpacing() + 8f), ImGuiChildFlags.Borders);
         ImGui.PopStyleVar();
 
-        // Left: transform gizmos (Unity's Q/W/E/R strip).
-        ImGui.RadioButton("Hand"u8, ref _gizmoMode, 0);
+        var iconSize = new float2(ImGui.GetFrameHeight());
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new float2(2f, 0f));
+        DrawGizmoToolButton("##Hand"u8, iconSize, 0, ToolbarIcon.Hand, "Hand (Q)"u8);
         ImGui.SameLine();
-        ImGui.RadioButton("Move"u8, ref _gizmoMode, 1);
+        DrawGizmoToolButton("##Move"u8, iconSize, 1, ToolbarIcon.Move, "Move (W)"u8);
         ImGui.SameLine();
-        ImGui.RadioButton("Rotate"u8, ref _gizmoMode, 2);
+        DrawGizmoToolButton("##Rotate"u8, iconSize, 2, ToolbarIcon.Rotate, "Rotate (E)"u8);
         ImGui.SameLine();
-        ImGui.RadioButton("Scale"u8, ref _gizmoMode, 3);
+        DrawGizmoToolButton("##Scale"u8, iconSize, 3, ToolbarIcon.Scale, "Scale (R)"u8);
+        ImGui.PopStyleVar();
         ImGui.SameLine();
         ImGui.TextDisabled("|"u8);
         ImGui.SameLine();
@@ -250,20 +254,18 @@ sealed class UnityEngineEditorStudy
         ImGui.SameLine();
         ImGui.Checkbox("Snap"u8, ref _useSnap);
 
-        // Center: Unity-style play / pause / step icons.
-        var iconSize = new float2(ImGui.GetFrameHeight());
         var playWidth = iconSize.X * 3f + 4f;
         ImGui.SameLine();
         ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX() + 16f, (ImGui.GetWindowWidth() - playWidth) * 0.5f));
 
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new float2(2f, 0f));
-        if (DrawPlayControlButton("##Play"u8, iconSize, enabled: true, _playing && !_paused, PlayControlIcon.Play))
+        if (DrawToolbarIconButton("##Play"u8, iconSize, enabled: true, _playing && !_paused, ToolbarIcon.Play))
             TogglePlay();
         ImGui.SetItemTooltip(_playing ? "Stop"u8 : "Play"u8);
 
         ImGui.SameLine();
         ImGui.BeginDisabled(!_playing);
-        if (DrawPlayControlButton("##Pause"u8, iconSize, _playing, _paused, PlayControlIcon.Pause))
+        if (DrawToolbarIconButton("##Pause"u8, iconSize, _playing, _paused, ToolbarIcon.Pause))
         {
             _paused = !_paused;
             Log(ConsoleSeverity.Info, _paused ? "Paused (stub)" : "Resumed (stub)");
@@ -271,7 +273,7 @@ sealed class UnityEngineEditorStudy
 
         ImGui.SetItemTooltip("Pause"u8);
         ImGui.SameLine();
-        if (DrawPlayControlButton("##Step"u8, iconSize, _playing, false, PlayControlIcon.Step))
+        if (DrawToolbarIconButton("##Step"u8, iconSize, _playing, false, ToolbarIcon.Step))
         {
             _paused = true;
             TickPlayMode(1f / 60f);
@@ -290,7 +292,14 @@ sealed class UnityEngineEditorStudy
 
     string UnsavedMarker() => _playing ? "  [Playing]" : "";
 
-    static bool DrawPlayControlButton(ImString id, float2 size, bool enabled, bool active, PlayControlIcon icon)
+    void DrawGizmoToolButton(ImString id, float2 size, int mode, ToolbarIcon icon, ImString tooltip)
+    {
+        if (DrawToolbarIconButton(id, size, enabled: true, _gizmoMode == mode, icon))
+            _gizmoMode = mode;
+        ImGui.SetItemTooltip(tooltip);
+    }
+
+    static bool DrawToolbarIconButton(ImString id, float2 size, bool enabled, bool active, ToolbarIcon icon)
     {
         var pressed = ImGui.InvisibleButton(id, size);
         var min = ImGui.GetItemRectMin();
@@ -311,18 +320,30 @@ sealed class UnityEngineEditorStudy
 
         var draw = ImGui.GetWindowDrawList();
         draw.AddRectFilled(min, max, Color(background), 3f);
-        DrawPlayControlIcon(draw, min, max, icon, Color(glyph));
+        DrawToolbarIcon(draw, min, max, icon, Color(glyph));
         return pressed;
     }
 
-    static void DrawPlayControlIcon(ImDrawListPtr draw, float2 min, float2 max, PlayControlIcon icon, ImColor8 color)
+    static void DrawToolbarIcon(ImDrawListPtr draw, float2 min, float2 max, ToolbarIcon icon, ImColor8 color)
     {
         var center = (min + max) * 0.5f;
         var extent = (max.X - min.X) * 0.28f;
 
         switch (icon)
         {
-            case PlayControlIcon.Pause:
+            case ToolbarIcon.Hand:
+                DrawHandIcon(draw, center, extent, color);
+                break;
+            case ToolbarIcon.Move:
+                DrawMoveIcon(draw, center, extent, color);
+                break;
+            case ToolbarIcon.Rotate:
+                DrawRotateIcon(draw, center, extent, color);
+                break;
+            case ToolbarIcon.Scale:
+                DrawScaleIcon(draw, center, extent, color);
+                break;
+            case ToolbarIcon.Pause:
             {
                 var barWidth = extent * 0.38f;
                 var gap = extent * 0.42f;
@@ -332,7 +353,7 @@ sealed class UnityEngineEditorStudy
                 draw.AddRectFilled(new float2(center.X + gap, top), new float2(center.X + gap + barWidth, bottom), color, 1f);
                 break;
             }
-            case PlayControlIcon.Step:
+            case ToolbarIcon.Step:
             {
                 var left = center.X - extent * 1.05f;
                 var right = center.X + extent * 0.45f;
@@ -357,6 +378,88 @@ sealed class UnityEngineEditorStudy
                     color);
                 break;
         }
+    }
+
+    static void DrawHandIcon(ImDrawListPtr draw, float2 center, float extent, ImColor8 color)
+    {
+        var palm = extent * 0.85f;
+        draw.AddRectFilled(
+            new float2(center.X - palm * 0.55f, center.Y - extent * 0.05f),
+            new float2(center.X + palm * 0.7f, center.Y + extent * 1.05f),
+            color,
+            2.5f);
+
+        for (var i = 0; i < 4; i++)
+        {
+            var x = center.X - palm * 0.5f + i * (palm * 0.32f);
+            var height = i is 1 or 2 ? extent * 1.2f : extent * 0.95f;
+            draw.AddRectFilled(
+                new float2(x, center.Y - height),
+                new float2(x + palm * 0.22f, center.Y + extent * 0.1f),
+                color,
+                1.8f);
+        }
+
+        draw.AddRectFilled(
+            new float2(center.X - palm * 1.05f, center.Y + extent * 0.05f),
+            new float2(center.X - palm * 0.35f, center.Y + extent * 0.5f),
+            color,
+            1.8f);
+    }
+
+    static void DrawMoveIcon(ImDrawListPtr draw, float2 center, float extent, ImColor8 color)
+    {
+        var tip = extent * 1.15f;
+        var thickness = 1.6f;
+        draw.AddLine(new float2(center.X - tip, center.Y), new float2(center.X + tip, center.Y), color, thickness);
+        draw.AddLine(new float2(center.X, center.Y - tip), new float2(center.X, center.Y + tip), color, thickness);
+        DrawArrowHead(draw, new float2(center.X + tip, center.Y), new float2(1f, 0f), extent * 0.45f, color);
+        DrawArrowHead(draw, new float2(center.X - tip, center.Y), new float2(-1f, 0f), extent * 0.45f, color);
+        DrawArrowHead(draw, new float2(center.X, center.Y - tip), new float2(0f, -1f), extent * 0.45f, color);
+        DrawArrowHead(draw, new float2(center.X, center.Y + tip), new float2(0f, 1f), extent * 0.45f, color);
+        var box = extent * 0.22f;
+        draw.AddRectFilled(new float2(center.X - box, center.Y - box), new float2(center.X + box, center.Y + box), color);
+    }
+
+    static void DrawRotateIcon(ImDrawListPtr draw, float2 center, float extent, ImColor8 color)
+    {
+        var radius = extent * 1.05f;
+        var start = 0.55f;
+        var end = MathF.PI * 1.7f;
+        draw.PathArcTo(center, radius, start, end, 18);
+        draw.PathStroke(color, ImDrawFlags.None, 1.8f);
+        var tip = new float2(center.X + MathF.Cos(end) * radius, center.Y + MathF.Sin(end) * radius);
+        var tangent = new float2(-MathF.Sin(end), MathF.Cos(end));
+        DrawArrowHead(draw, tip, tangent, extent * 0.5f, color);
+    }
+
+    static void DrawScaleIcon(ImDrawListPtr draw, float2 center, float extent, ImColor8 color)
+    {
+        var inner = extent * 0.42f;
+        draw.AddRect(
+            new float2(center.X - inner, center.Y - inner),
+            new float2(center.X + inner, center.Y + inner),
+            color,
+            0f,
+            ImDrawFlags.None,
+            1.6f);
+        var outTip = extent * 1.15f;
+        DrawArrowHead(draw, new float2(center.X + outTip, center.Y + outTip), new float2(1f, 1f), extent * 0.42f, color);
+        DrawArrowHead(draw, new float2(center.X - outTip, center.Y - outTip), new float2(-1f, -1f), extent * 0.42f, color);
+        DrawArrowHead(draw, new float2(center.X + outTip, center.Y - outTip), new float2(1f, -1f), extent * 0.42f, color);
+        DrawArrowHead(draw, new float2(center.X - outTip, center.Y + outTip), new float2(-1f, 1f), extent * 0.42f, color);
+    }
+
+    static void DrawArrowHead(ImDrawListPtr draw, float2 tip, float2 direction, float size, ImColor8 color)
+    {
+        var length = MathF.Sqrt(direction.X * direction.X + direction.Y * direction.Y);
+        if (length < 0.0001f)
+            return;
+
+        var dir = direction / length;
+        var n = new float2(-dir.Y, dir.X);
+        var basePoint = tip - dir * size;
+        draw.AddTriangleFilled(tip, basePoint + n * (size * 0.55f), basePoint - n * (size * 0.55f), color);
     }
 
     static ImColor8 Color(float4 value) => (ImColor8)ImGui.GetColorU32(value);
@@ -491,37 +594,111 @@ sealed class UnityEngineEditorStudy
             return;
 
         var origin = ImGui.GetCursorScreenPos();
+        ImGui.Dummy(avail);
         var draw = ImGui.GetWindowDrawList();
         var max = new float2(origin.X + avail.X, origin.Y + avail.Y);
         draw.AddRectFilled(origin, max, ImGui.GetColorU32(background));
 
         var camera = FindByName("Main Camera")?.Components.OfType<StubCameraComponent>().FirstOrDefault();
-        var projection = BuildProjection(avail.X / MathF.Max(avail.Y, 1f), camera);
+        var aspect = avail.X / MathF.Max(avail.Y, 1f);
+        var sceneOrtho = sceneTools && _scene2D;
+        var projection = sceneOrtho
+            ? float4x4.CreateOrthographic(_sceneFocusDistance * aspect, _sceneFocusDistance, camera?.NearClip ?? 0.3f, camera?.FarClip ?? 1000f)
+            : BuildProjection(aspect, camera);
+        var grid = sceneOrtho
+            ? float4x4.CreateRotationX(-MathF.PI / 2f)
+            : float4x4.Identity;
 
         ImGuizmo.SetDrawlist(draw);
         ImGuizmo.SetRect(origin.X, origin.Y, avail.X, avail.Y);
-        ImGuizmo.SetOrthographic(camera?.Orthographic ?? false);
-        ImGuizmo.DrawGrid(view, projection, float4x4.Identity, 20f);
+        ImGuizmo.SetOrthographic(sceneOrtho || (!sceneTools && (camera?.Orthographic ?? false)));
+        ImGuizmo.DrawGrid(view, projection, grid, 20f);
 
         CollectCubeMatrices();
         if (_cubeMatrices.Count > 0)
             ImGuizmo.DrawCubes(view, projection, CollectionsMarshal.AsSpan(_cubeMatrices));
 
+        var overlayHovered = false;
         if (sceneTools)
         {
             ManipulateSelected(view, projection);
-            HandleSceneNavigation();
-            var cubeSize = new float2(96f, 96f);
-            var cubePos = new float2(max.X - cubeSize.X - 8f, origin.Y + 8f);
-            ImGuizmo.ViewManipulate(ref _sceneView, _sceneFocusDistance, cubePos, cubeSize, 0x10101010u);
-            SyncSceneTargetFromView();
+            overlayHovered = DrawSceneViewModeToggle(origin);
+            if (!overlayHovered)
+                HandleSceneNavigation();
+            if (!_scene2D)
+            {
+                var cubeSize = new float2(96f, 96f);
+                var cubePos = new float2(max.X - cubeSize.X - 8f, origin.Y + 8f);
+                ImGuizmo.ViewManipulate(ref _sceneView, _sceneFocusDistance, cubePos, cubeSize, 0x10101010u);
+                SyncSceneTargetFromView();
+            }
         }
 
-        draw.AddText(
-            new float2(origin.X + 10f, origin.Y + 8f),
-            ImGui.GetColorU32(new float4(1f, 1f, 1f, 0.65f)),
-            sceneTools ? "Scene (ImGuizmo)" : (_playing ? "Game (playing)" : "Game (edit mode)"));
+        if (!sceneTools)
+        {
+            draw.AddText(
+                new float2(origin.X + 10f, origin.Y + 8f),
+                ImGui.GetColorU32(new float4(1f, 1f, 1f, 0.65f)),
+                _playing ? "Game (playing)" : "Game (edit mode)");
+        }
     }
+
+    bool DrawSceneViewModeToggle(float2 origin)
+    {
+        ImGui.SetCursorScreenPos(origin + new float2(8f, 8f));
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, new float4(0.12f, 0.12f, 0.13f, 0.86f));
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new float2(4f, 4f));
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new float2(2f, 0f));
+        ImGui.BeginChild("SceneViewMode"u8, new float2(84f, ImGui.GetFrameHeight() + 8f), ImGuiChildFlags.Borders);
+
+        if (DrawSceneModeButton("2D"u8, _scene2D))
+            SetScene2D(true);
+        ImGui.SameLine();
+        if (DrawSceneModeButton("3D"u8, !_scene2D))
+            SetScene2D(false);
+
+        var hovered = ImGui.IsWindowHovered();
+        ImGui.EndChild();
+        ImGui.PopStyleVar(2);
+        ImGui.PopStyleColor();
+        return hovered;
+    }
+
+    static bool DrawSceneModeButton(ImString label, bool active)
+    {
+        if (active)
+            ImGui.PushStyleColor(ImGuiCol.Button, new float4(0.18f, 0.42f, 0.72f, 1f));
+        var pressed = ImGui.Button(label, new float2(36f, 0f));
+        if (active)
+            ImGui.PopStyleColor();
+        return pressed && !active;
+    }
+
+    void SetScene2D(bool enabled)
+    {
+        if (_scene2D == enabled)
+            return;
+
+        if (enabled)
+        {
+            _sceneView3D = _sceneView;
+            _scene2D = true;
+            Apply2DSceneView();
+            Log(ConsoleSeverity.Info, "Scene view: 2D");
+            return;
+        }
+
+        _scene2D = false;
+        _sceneView = _sceneView3D;
+        SyncSceneTargetFromView();
+        Log(ConsoleSeverity.Info, "Scene view: 3D");
+    }
+
+    void Apply2DSceneView()
+        => _sceneView = float4x4.CreateLookAt(
+            _sceneTarget + new float3(0f, 0f, -_sceneFocusDistance),
+            _sceneTarget,
+            new float3(0f, 1f, 0f));
 
     void ManipulateSelected(float4x4 view, float4x4 projection)
     {
@@ -567,11 +744,13 @@ sealed class UnityEngineEditorStudy
             return;
 
         var io = ImGui.GetIO();
-        var orbit = ImGui.IsMouseDragging(ImGuiMouseButton.Middle)
-                    || (_gizmoMode == 0 && ImGui.IsMouseDragging(ImGuiMouseButton.Left));
+        var pan = ImGui.IsMouseDragging(ImGuiMouseButton.Right)
+                  || (_scene2D && ImGui.IsMouseDragging(ImGuiMouseButton.Middle))
+                  || (_gizmoMode == 0 && ImGui.IsMouseDragging(ImGuiMouseButton.Left));
+        var orbit = !_scene2D && ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
         if (orbit)
             OrbitSceneCamera(io.MouseDelta);
-        else if (ImGui.IsMouseDragging(ImGuiMouseButton.Right))
+        else if (pan)
             PanSceneCamera(io.MouseDelta);
 
         if (io.MouseWheel != 0f)
@@ -616,6 +795,12 @@ sealed class UnityEngineEditorStudy
         var offset = eye - _sceneTarget;
         if (offset.LengthSquared() < 0.0001f)
             offset = new float3(0f, 0.3f, -1f);
+        if (_scene2D)
+        {
+            Apply2DSceneView();
+            return;
+        }
+
         var direction = float3.Normalize(offset);
         _sceneView = float4x4.CreateLookAt(_sceneTarget + direction * _sceneFocusDistance, _sceneTarget, new float3(0f, 1f, 0f));
     }
@@ -968,10 +1153,14 @@ sealed class UnityEngineEditorStudy
         Error = 3,
     }
 
-    enum PlayControlIcon
+    enum ToolbarIcon
     {
         Play,
         Pause,
         Step,
+        Hand,
+        Move,
+        Rotate,
+        Scale,
     }
 }
