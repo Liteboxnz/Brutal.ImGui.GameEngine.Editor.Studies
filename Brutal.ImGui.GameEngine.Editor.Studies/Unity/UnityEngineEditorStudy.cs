@@ -712,6 +712,8 @@ sealed class UnityEngineEditorStudy
             var cameraChord = SceneCameraChordActive();
             if (!cameraChord)
                 ManipulateSelected(view, projection);
+            if (!overlayHovered && !cameraChord)
+                TryPickSceneObject(view, projection, origin, avail);
             if (!overlayHovered)
                 HandleSceneNavigation();
             if (!_scene2D && !cameraChord)
@@ -788,6 +790,110 @@ sealed class UnityEngineEditorStudy
             _sceneTarget + new float3(0f, 0f, -_sceneFocusDistance),
             _sceneTarget,
             new float3(0f, 1f, 0f));
+
+    void TryPickSceneObject(float4x4 view, float4x4 projection, float2 origin, float2 size)
+    {
+        if (!ImGui.IsWindowHovered()
+            || !ImGui.IsMouseClicked(ImGuiMouseButton.Left, false)
+            || ImGuizmo.IsUsing()
+            || ImGuizmo.IsUsingViewManipulate()
+            || ImGuizmo.IsViewManipulateHovered()
+            || ImGuizmo.GetHoveredHandleType() != ImGuizmoMoveType.MT_NONE)
+            return;
+
+        var mouse = ImGui.GetIO().MousePos;
+        if (mouse.X < origin.X || mouse.Y < origin.Y || mouse.X > origin.X + size.X || mouse.Y > origin.Y + size.Y)
+            return;
+
+        ImGuizmo.ComputeMouseRay(view, projection, mouse, origin, size, out var rayOrigin, out var rayDirection);
+        if (rayDirection.LengthSquared() < 0.0001f)
+            return;
+
+        rayDirection = float3.Normalize(rayDirection);
+        var bestDistance = float.MaxValue;
+        var bestId = 0;
+        foreach (var root in _scene.Roots)
+            PickSceneObject(root, rayOrigin, rayDirection, ref bestDistance, ref bestId);
+
+        _selectedId = bestId;
+    }
+
+    void PickSceneObject(StubGameObject node, float3 rayOrigin, float3 rayDirection, ref float bestDistance, ref int bestId)
+    {
+        if (node.Active && node.Components.OfType<StubMeshRendererComponent>().Any())
+        {
+            var model = ImGuizmo.RecomposeMatrixFromComponents(node.Position, node.Rotation, node.Scale);
+            if (float4x4.Invert(model, out var inverse)
+                && IntersectLocalCube(rayOrigin, rayDirection, inverse, model, out var distance)
+                && distance < bestDistance)
+            {
+                bestDistance = distance;
+                bestId = node.Id;
+            }
+        }
+
+        foreach (var child in node.Children)
+            PickSceneObject(child, rayOrigin, rayDirection, ref bestDistance, ref bestId);
+    }
+
+    static bool IntersectLocalCube(float3 rayOrigin, float3 rayDirection, float4x4 worldToLocal, float4x4 localToWorld, out float distance)
+    {
+        distance = float.MaxValue;
+        var origin = TransformPoint(worldToLocal, rayOrigin);
+        var direction = TransformVector(worldToLocal, rayDirection);
+        if (!IntersectRayAabb(origin, direction, new float3(-0.5f, -0.5f, -0.5f), new float3(0.5f, 0.5f, 0.5f), out var t))
+            return false;
+
+        var localHit = origin + direction * t;
+        var worldHit = TransformPoint(localToWorld, localHit);
+        var alongRay = worldHit - rayOrigin;
+        if (float3.Dot(alongRay, rayDirection) < 0f)
+            return false;
+
+        distance = alongRay.Length();
+        return true;
+    }
+
+    static bool IntersectRayAabb(float3 origin, float3 direction, float3 min, float3 max, out float t)
+    {
+        t = 0f;
+        var tMin = float.NegativeInfinity;
+        var tMax = float.PositiveInfinity;
+        if (!ClipAxis(origin.X, direction.X, min.X, max.X, ref tMin, ref tMax)
+            || !ClipAxis(origin.Y, direction.Y, min.Y, max.Y, ref tMin, ref tMax)
+            || !ClipAxis(origin.Z, direction.Z, min.Z, max.Z, ref tMin, ref tMax)
+            || tMax < 0f)
+            return false;
+
+        t = tMin >= 0f ? tMin : tMax;
+        return true;
+    }
+
+    static bool ClipAxis(float origin, float direction, float min, float max, ref float tMin, ref float tMax)
+    {
+        if (MathF.Abs(direction) < 0.0000001f)
+            return origin >= min && origin <= max;
+
+        var t1 = (min - origin) / direction;
+        var t2 = (max - origin) / direction;
+        if (t1 > t2)
+            (t1, t2) = (t2, t1);
+        tMin = MathF.Max(tMin, t1);
+        tMax = MathF.Min(tMax, t2);
+        return tMin <= tMax;
+    }
+
+    static float3 TransformPoint(float4x4 matrix, float3 value)
+        => new(
+            value.X * matrix.X.X + value.Y * matrix.Y.X + value.Z * matrix.Z.X + matrix.W.X,
+            value.X * matrix.X.Y + value.Y * matrix.Y.Y + value.Z * matrix.Z.Y + matrix.W.Y,
+            value.X * matrix.X.Z + value.Y * matrix.Y.Z + value.Z * matrix.Z.Z + matrix.W.Z);
+
+    static float3 TransformVector(float4x4 matrix, float3 value)
+        => new(
+            value.X * matrix.X.X + value.Y * matrix.Y.X + value.Z * matrix.Z.X,
+            value.X * matrix.X.Y + value.Y * matrix.Y.Y + value.Z * matrix.Z.Y,
+            value.X * matrix.X.Z + value.Y * matrix.Y.Z + value.Z * matrix.Z.Z);
 
     void ManipulateSelected(float4x4 view, float4x4 projection)
     {
