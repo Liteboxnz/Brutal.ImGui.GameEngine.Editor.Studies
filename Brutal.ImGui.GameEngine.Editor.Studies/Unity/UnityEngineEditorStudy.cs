@@ -12,9 +12,7 @@ using Brutal.Numerics;
 /// </summary>
 sealed class UnityEngineEditorStudy
 {
-    static readonly string[] Tags = ["Untagged", "Respawn", "Finish", "EditorOnly", "MainCamera", "Player", "GameController"];
     static readonly string[] Layers = ["Default", "TransparentFX", "Ignore Raycast", "Water", "UI"];
-    static readonly string[] LightTypes = ["Directional", "Point", "Spot"];
     static readonly string[] ConsoleFilters = ["All", "Info", "Warning", "Error"];
 
     readonly UnityStubScene _scene = UnityStubScene.CreateSampleScene();
@@ -39,6 +37,17 @@ sealed class UnityEngineEditorStudy
     float4x4 _sceneView;
     float4x4 _sceneView3D;
     bool _scene2D;
+    bool _showProjectSettings;
+    int _projectSettingsPage;
+    float _sceneCameraFov = 60f;
+    float _sceneCameraNear = 0.3f;
+    float _sceneCameraFar = 1000f;
+    string? _selectedAsset;
+    bool _assetStubToggle = true;
+    bool _assetStubSrgb = true;
+    bool _assetStubMips = true;
+    float _assetStubSmoothness = 0.5f;
+    float3 _assetStubColor = new(0.8f, 0.8f, 0.8f);
 
     public string WindowTitle => "Unity Editor — ImGui Study";
 
@@ -49,7 +58,7 @@ sealed class UnityEngineEditorStudy
         _gizmoMode = 1;
         var player = FindByName("Player");
         if (player is not null)
-            _selectedId = player.Id;
+            SelectGameObject(player.Id);
 
         Log(ConsoleSeverity.Info, "Unity editor study ready. Scene gizmos are ImGuizmo; the rest is stubbed.");
         Log(ConsoleSeverity.Info, "Scene: RMB look + WASD/QE fly, MMB pan, Alt+LMB orbit, Alt+RMB or wheel dolly, F to focus.");
@@ -74,6 +83,7 @@ sealed class UnityEngineEditorStudy
         DrawProject();
         DrawConsole();
         DrawProfiler(io.Framerate);
+        DrawProjectSettings();
 
         // DockBuilder selects the last window docked into a node. Focus Scene after
         // every panel has been submitted so the center tabs open on Scene, not Profiler.
@@ -200,6 +210,9 @@ sealed class UnityEngineEditorStudy
             ImGui.Separator();
             if (ImGui.MenuItem("Play"u8, "Ctrl+P"u8))
                 TogglePlay();
+            ImGui.Separator();
+            if (ImGui.MenuItem("Project Settings..."u8))
+                _showProjectSettings = true;
             ImGui.EndMenu();
         }
 
@@ -513,7 +526,7 @@ sealed class UnityEngineEditorStudy
     {
         var created = new StubGameObject("GameObject");
         _scene.Roots.Add(created);
-        _selectedId = created.Id;
+        SelectGameObject(created.Id);
         Log(ConsoleSeverity.Info, "Created empty GameObject (stub)");
     }
 
@@ -576,7 +589,7 @@ sealed class UnityEngineEditorStudy
         ImGui.PopStyleColor();
 
         if (ImGui.IsItemClicked() && !ImGui.IsItemToggledOpen())
-            _selectedId = node.Id;
+            SelectGameObject(node.Id);
 
         if (!opened || node.Children.Count == 0)
             return;
@@ -595,7 +608,7 @@ sealed class UnityEngineEditorStudy
             return;
         }
 
-        ImGui.TextDisabled($"Scene  |  {GizmoName(_gizmoMode)}  |  {(_gizmoSpace == 0 ? "Local" : "World")}  |  ImGuizmo");
+        ImGui.TextDisabled($"Scene  |  {GizmoName(_gizmoMode)}  |  {(_gizmoSpace == 0 ? "Local" : "World")}  |  FOV {_sceneCameraFov:0}");
         Draw3DViewport(new float4(0.18f, 0.19f, 0.2f, 1f), _sceneView, sceneTools: true);
         ImGui.End();
     }
@@ -628,16 +641,16 @@ sealed class UnityEngineEditorStudy
         var max = new float2(origin.X + avail.X, origin.Y + avail.Y);
         draw.AddRectFilled(origin, max, ImGui.GetColorU32(background));
 
-        var camera = FindByName("Main Camera")?.Components.OfType<StubCameraComponent>().FirstOrDefault();
+        var gameCamera = FindByName("Main Camera")?.Components.OfType<StubCameraComponent>().FirstOrDefault();
         var aspect = avail.X / MathF.Max(avail.Y, 1f);
         var sceneOrtho = sceneTools && _scene2D;
-        var projection = sceneOrtho
-            ? float4x4.CreateOrthographic(_sceneFocusDistance * aspect, _sceneFocusDistance, camera?.NearClip ?? 0.3f, camera?.FarClip ?? 1000f)
-            : BuildProjection(aspect, camera);
+        var projection = sceneTools
+            ? BuildSceneProjection(aspect)
+            : BuildProjection(aspect, gameCamera);
 
         ImGuizmo.SetDrawlist(draw);
         ImGuizmo.SetRect(origin.X, origin.Y, avail.X, avail.Y);
-        ImGuizmo.SetOrthographic(sceneOrtho || (!sceneTools && (camera?.Orthographic ?? false)));
+        ImGuizmo.SetOrthographic(sceneOrtho || (!sceneTools && (gameCamera?.Orthographic ?? false)));
         if (sceneTools)
         {
             var grid = sceneOrtho
@@ -649,6 +662,8 @@ sealed class UnityEngineEditorStudy
         CollectCubeMatrices();
         if (_cubeMatrices.Count > 0)
             ImGuizmo.DrawCubes(view, projection, CollectionsMarshal.AsSpan(_cubeMatrices));
+        if (sceneTools && !_scene2D)
+            DrawSceneCameraGizmos(draw, view, projection, origin, avail, aspect);
 
         var overlayHovered = false;
         if (sceneTools)
@@ -736,6 +751,116 @@ sealed class UnityEngineEditorStudy
             _sceneTarget,
             new float3(0f, 1f, 0f));
 
+    void DrawSceneCameraGizmos(ImDrawListPtr draw, float4x4 view, float4x4 projection, float2 origin, float2 size, float aspect)
+    {
+        foreach (var root in _scene.Roots)
+            DrawSceneCameraGizmos(root, draw, view, projection, origin, size, aspect);
+    }
+
+    void DrawSceneCameraGizmos(StubGameObject node, ImDrawListPtr draw, float4x4 view, float4x4 projection, float2 origin, float2 size, float aspect)
+    {
+        var camera = node.Components.OfType<StubCameraComponent>().FirstOrDefault();
+        if (node.Active && camera is not null)
+            DrawCameraSymbol(draw, node, camera, view, projection, origin, size, aspect);
+
+        foreach (var child in node.Children)
+            DrawSceneCameraGizmos(child, draw, view, projection, origin, size, aspect);
+    }
+
+    void DrawCameraSymbol(ImDrawListPtr draw, StubGameObject node, StubCameraComponent camera, float4x4 view, float4x4 projection, float2 origin, float2 size, float aspect)
+    {
+        var world = GetWorldMatrix(node);
+        var viewProjection = view * projection;
+        var selected = node.Id == _selectedId;
+        var color = Color(selected
+            ? new float4(0.45f, 0.85f, 1f, 1f)
+            : new float4(0.82f, 0.82f, 0.82f, 1f));
+        var thickness = selected ? 2.2f : 1.5f;
+
+        var body = new float3[]
+        {
+            new(-0.18f, -0.12f, -0.16f),
+            new(0.18f, -0.12f, -0.16f),
+            new(0.18f, 0.12f, -0.16f),
+            new(-0.18f, 0.12f, -0.16f),
+            new(-0.18f, -0.12f, 0.16f),
+            new(0.18f, -0.12f, 0.16f),
+            new(0.18f, 0.12f, 0.16f),
+            new(-0.18f, 0.12f, 0.16f),
+        };
+        DrawProjectedEdges(draw, world, viewProjection, origin, size, body, [
+            (0, 1), (1, 2), (2, 3), (3, 0),
+            (4, 5), (5, 6), (6, 7), (7, 4),
+            (0, 4), (1, 5), (2, 6), (3, 7),
+        ], color, thickness);
+
+        var fov = camera.Orthographic ? 60f : camera.FieldOfView;
+        var tan = MathF.Tan(fov * (MathF.PI / 180f) * 0.5f);
+        var near = 0.22f;
+        var far = 1.15f;
+        var nearH = near * tan;
+        var nearW = nearH * aspect;
+        var farH = far * tan;
+        var farW = farH * aspect;
+        var frustum = new float3[]
+        {
+            new(-nearW, -nearH, near),
+            new(nearW, -nearH, near),
+            new(nearW, nearH, near),
+            new(-nearW, nearH, near),
+            new(-farW, -farH, far),
+            new(farW, -farH, far),
+            new(farW, farH, far),
+            new(-farW, farH, far),
+        };
+        DrawProjectedEdges(draw, world, viewProjection, origin, size, frustum, [
+            (0, 1), (1, 2), (2, 3), (3, 0),
+            (4, 5), (5, 6), (6, 7), (7, 4),
+            (0, 4), (1, 5), (2, 6), (3, 7),
+        ], color, thickness);
+
+        var up = new float3[]
+        {
+            new(0f, 0.12f, -0.02f),
+            new(-0.08f, 0.28f, -0.02f),
+            new(0.08f, 0.28f, -0.02f),
+        };
+        DrawProjectedEdges(draw, world, viewProjection, origin, size, up, [(0, 1), (1, 2), (2, 0)], color, thickness);
+    }
+
+    void DrawProjectedEdges(ImDrawListPtr draw, float4x4 world, float4x4 viewProjection, float2 origin, float2 size, float3[] points, (int A, int B)[] edges, ImColor8 color, float thickness)
+    {
+        var screens = new float2[points.Length];
+        var visible = new bool[points.Length];
+        for (var i = 0; i < points.Length; i++)
+            visible[i] = ProjectToScreen(TransformPoint(world, points[i]), viewProjection, origin, size, out screens[i]);
+
+        foreach (var (a, b) in edges)
+        {
+            if (visible[a] && visible[b])
+                draw.AddLine(screens[a], screens[b], color, thickness);
+        }
+    }
+
+    static bool ProjectToScreen(float3 world, float4x4 viewProjection, float2 origin, float2 size, out float2 screen)
+    {
+        var clip = new float4(
+            world.X * viewProjection.X.X + world.Y * viewProjection.Y.X + world.Z * viewProjection.Z.X + viewProjection.W.X,
+            world.X * viewProjection.X.Y + world.Y * viewProjection.Y.Y + world.Z * viewProjection.Z.Y + viewProjection.W.Y,
+            world.X * viewProjection.X.Z + world.Y * viewProjection.Y.Z + world.Z * viewProjection.Z.Z + viewProjection.W.Z,
+            world.X * viewProjection.X.W + world.Y * viewProjection.Y.W + world.Z * viewProjection.Z.W + viewProjection.W.W);
+        if (clip.W <= 0.0001f)
+        {
+            screen = default;
+            return false;
+        }
+
+        var ndcX = clip.X * 0.5f / clip.W + 0.5f;
+        var ndcY = 1f - (clip.Y * 0.5f / clip.W + 0.5f);
+        screen = new float2(origin.X + ndcX * size.X, origin.Y + ndcY * size.Y);
+        return ndcX is > -0.2f and < 1.2f && ndcY is > -0.2f and < 1.2f;
+    }
+
     void TryPickSceneObject(float4x4 view, float4x4 projection, float2 origin, float2 size)
     {
         if (!ImGui.IsWindowHovered()
@@ -760,33 +885,39 @@ sealed class UnityEngineEditorStudy
         foreach (var root in _scene.Roots)
             PickSceneObject(root, rayOrigin, rayDirection, ref bestDistance, ref bestId);
 
-        _selectedId = bestId;
+        SelectGameObject(bestId);
     }
 
     void PickSceneObject(StubGameObject node, float3 rayOrigin, float3 rayDirection, ref float bestDistance, ref int bestId)
     {
         if (node.Active && node.Components.OfType<StubMeshRendererComponent>().Any())
-        {
-            var model = GetWorldMatrix(node);
-            if (float4x4.Invert(model, out var inverse)
-                && IntersectLocalCube(rayOrigin, rayDirection, inverse, model, out var distance)
-                && distance < bestDistance)
-            {
-                bestDistance = distance;
-                bestId = node.Id;
-            }
-        }
+            TryPickOrientedBox(node, rayOrigin, rayDirection, new float3(-0.5f, -0.5f, -0.5f), new float3(0.5f, 0.5f, 0.5f), ref bestDistance, ref bestId);
+
+        if (!_scene2D && node.Active && node.Components.OfType<StubCameraComponent>().Any())
+            TryPickOrientedBox(node, rayOrigin, rayDirection, new float3(-0.22f, -0.16f, -0.18f), new float3(0.22f, 0.16f, 0.7f), ref bestDistance, ref bestId);
 
         foreach (var child in node.Children)
             PickSceneObject(child, rayOrigin, rayDirection, ref bestDistance, ref bestId);
     }
 
-    static bool IntersectLocalCube(float3 rayOrigin, float3 rayDirection, float4x4 worldToLocal, float4x4 localToWorld, out float distance)
+    void TryPickOrientedBox(StubGameObject node, float3 rayOrigin, float3 rayDirection, float3 min, float3 max, ref float bestDistance, ref int bestId)
+    {
+        var model = GetWorldMatrix(node);
+        if (!float4x4.Invert(model, out var inverse)
+            || !IntersectLocalCube(rayOrigin, rayDirection, inverse, model, min, max, out var distance)
+            || distance >= bestDistance)
+            return;
+
+        bestDistance = distance;
+        bestId = node.Id;
+    }
+
+    static bool IntersectLocalCube(float3 rayOrigin, float3 rayDirection, float4x4 worldToLocal, float4x4 localToWorld, float3 min, float3 max, out float distance)
     {
         distance = float.MaxValue;
         var origin = TransformPoint(worldToLocal, rayOrigin);
         var direction = TransformVector(worldToLocal, rayDirection);
-        if (!IntersectRayAabb(origin, direction, new float3(-0.5f, -0.5f, -0.5f), new float3(0.5f, 0.5f, 0.5f), out var t))
+        if (!IntersectRayAabb(origin, direction, min, max, out var t))
             return false;
 
         var localHit = origin + direction * t;
@@ -1091,6 +1222,17 @@ sealed class UnityEngineEditorStudy
         return float4x4.CreateLookAt(position, position + float3.Normalize(forward), new float3(0f, 1f, 0f));
     }
 
+    float4x4 BuildSceneProjection(float aspect)
+    {
+        var near = MathF.Max(_sceneCameraNear, 0.01f);
+        var far = MathF.Max(_sceneCameraFar, near + 0.01f);
+        if (_scene2D)
+            return float4x4.CreateOrthographic(_sceneFocusDistance * aspect, _sceneFocusDistance, near, far);
+
+        var fov = Math.Clamp(_sceneCameraFov, 1f, 179f) * (MathF.PI / 180f);
+        return float4x4.CreatePerspectiveFieldOfView(fov, aspect, near, far);
+    }
+
     static float4x4 BuildProjection(float aspect, StubCameraComponent? camera)
     {
         var near = camera?.NearClip ?? 0.3f;
@@ -1100,6 +1242,44 @@ sealed class UnityEngineEditorStudy
 
         var fov = (camera?.FieldOfView ?? 60f) * (MathF.PI / 180f);
         return float4x4.CreatePerspectiveFieldOfView(fov, aspect, near, far);
+    }
+
+    void DrawProjectSettings()
+    {
+        if (!_showProjectSettings)
+            return;
+
+        ImGui.SetNextWindowSize(new float2(520f, 360f), ImGuiCond.FirstUseEver);
+        if (!ImGui.Begin("Project Settings"u8, ref _showProjectSettings))
+        {
+            ImGui.End();
+            return;
+        }
+
+        ImGui.SetNextItemWidth(220f);
+        ImGui.Combo("Category"u8, ref _projectSettingsPage, "Scene Camera\0Quality\0Graphics\0"u8);
+        ImGui.Separator();
+
+        switch (_projectSettingsPage)
+        {
+            case 0:
+                ImGui.TextDisabled("Scene view camera only. Game view uses Main Camera."u8);
+                ImGui.SliderFloat("Field of View"u8, ref _sceneCameraFov, 1f, 179f);
+                ImGui.DragFloat("Near Clip"u8, ref _sceneCameraNear, 0.01f, 0.01f, 10f);
+                ImGui.DragFloat("Far Clip"u8, ref _sceneCameraFar, 1f, 1f, 5000f);
+                ImGui.TextDisabled(_scene2D
+                    ? "2D mode uses orthographic projection; FOV applies in 3D."
+                    : "Perspective projection for the Scene tab.");
+                break;
+            case 1:
+                ImGui.TextDisabled("Quality settings are stubbed."u8);
+                break;
+            default:
+                ImGui.TextDisabled("Graphics settings are stubbed."u8);
+                break;
+        }
+
+        ImGui.End();
     }
 
     void CollectCubeMatrices()
@@ -1155,10 +1335,17 @@ sealed class UnityEngineEditorStudy
             return;
         }
 
+        if (_selectedAsset is not null)
+        {
+            DrawAssetInspector(_selectedAsset);
+            ImGui.End();
+            return;
+        }
+
         var selected = _scene.Find(_selectedId);
         if (selected is null)
         {
-            ImGui.TextDisabled("Select a GameObject in the Hierarchy."u8);
+            ImGui.TextDisabled("Select a GameObject in the Hierarchy or an asset in Project."u8);
             ImGui.End();
             return;
         }
@@ -1174,11 +1361,7 @@ sealed class UnityEngineEditorStudy
         ImGui.SameLine();
         ImGui.TextDisabled($"  Instance ID {selected.Id}");
 
-        var tagIndex = Math.Max(0, Array.IndexOf(Tags, selected.Tag));
         var layerIndex = Math.Max(0, Array.IndexOf(Layers, selected.Layer));
-        if (DrawCombo("Tag##Inspector"u8, ref tagIndex, Tags))
-            selected.Tag = Tags[tagIndex];
-        ImGui.SameLine();
         if (DrawCombo("Layer##Inspector"u8, ref layerIndex, Layers))
             selected.Layer = Layers[layerIndex];
 
@@ -1250,18 +1433,6 @@ sealed class UnityEngineEditorStudy
                 camera.Orthographic = ortho;
                 break;
 
-            case StubLightComponent light:
-                var type = light.TypeIndex;
-                var intensity = light.Intensity;
-                var color = light.Color;
-                DrawCombo("Type##Inspector.Light"u8, ref type, LightTypes);
-                ImGui.DragFloat("Intensity##Inspector.Light"u8, ref intensity, 0.02f, 0f, 8f);
-                ImGui.ColorEdit3("Color##Inspector.Light"u8, ref color);
-                light.TypeIndex = type;
-                light.Intensity = intensity;
-                light.Color = color;
-                break;
-
             case StubMeshRendererComponent renderer:
                 var meshColor = renderer.Color;
                 var shadows = renderer.CastShadows;
@@ -1319,24 +1490,107 @@ sealed class UnityEngineEditorStudy
         ImGui.TextDisabled("Assets  (stub folders, no files on disk)"u8);
         ImGui.Separator();
 
-        DrawAssetFolder("Scenes"u8, ["SampleScene.unity"]);
-        DrawAssetFolder("Scripts"u8, ["PlayerController.cs", "GameManager.cs"]);
-        DrawAssetFolder("Prefabs"u8, ["Player.prefab"]);
-        DrawAssetFolder("Materials"u8, ["Lit.mat", "Ground.mat"]);
-        DrawAssetFolder("Textures"u8, ["Default.png"]);
+        DrawAssetFolder("Scenes", ["SampleScene.unity"]);
+        DrawAssetFolder("Materials", ["Lit.mat", "Ground.mat"]);
+        DrawAssetFolder("Textures", ["Default.png"]);
 
         ImGui.End();
     }
 
-    static void DrawAssetFolder(ImString name, string[] assets)
+    void DrawAssetFolder(string folder, string[] assets)
     {
-        if (!ImGui.TreeNode(name))
+        if (!ImGui.TreeNode(folder))
             return;
 
         foreach (var asset in assets)
-            ImGui.Selectable(asset);
+        {
+            var path = $"{folder}/{asset}";
+            var isScene = asset.EndsWith(".unity", StringComparison.OrdinalIgnoreCase);
+            if (ImGui.Selectable(asset, !isScene && _selectedAsset == path) && !isScene)
+            {
+                _selectedAsset = path;
+                _selectedId = 0;
+            }
+        }
 
         ImGui.TreePop();
+    }
+
+    void DrawAssetInspector(string path)
+    {
+        var slash = path.LastIndexOf('/');
+        var name = slash >= 0 ? path[(slash + 1)..] : path;
+        var extension = Path.GetExtension(name);
+
+        ImGui.Text(name);
+        ImGui.TextDisabled(AssetTypeName(extension));
+        ImGui.Separator();
+        ImGui.Text($"Path  Assets/{path}");
+        ImGui.TextDisabled($"GUID  {AssetStubGuid(path)}");
+        ImGui.TextDisabled($"Imported  stub, not on disk");
+
+        ImGui.Separator();
+        if (ImGui.CollapsingHeader("Preview##Inspector.Asset"u8, ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            switch (extension.ToLowerInvariant())
+            {
+                case ".cs":
+                    ImGui.Text("Importer  MonoImporter"u8);
+                    ImGui.TextDisabled("Class  MonoBehaviour"u8);
+                    ImGui.TextDisabled("Assembly  Assembly-CSharp"u8);
+                    ImGui.Checkbox("Default References"u8, ref _assetStubToggle);
+                    break;
+                case ".prefab":
+                    ImGui.Text("Importer  PrefabImporter"u8);
+                    ImGui.TextDisabled("Root  Player"u8);
+                    ImGui.TextDisabled("Components  Transform, Mesh Renderer, PlayerController"u8);
+                    ImGui.TextDisabled("Static  false"u8);
+                    break;
+                case ".mat":
+                    ImGui.Text("Importer  ShaderGraph / Standard"u8);
+                    ImGui.TextDisabled("Shader  Universal Render Pipeline/Lit"u8);
+                    ImGui.ColorEdit3("Albedo##Inspector.Asset.Material"u8, ref _assetStubColor);
+                    ImGui.SliderFloat("Smoothness##Inspector.Asset.Material"u8, ref _assetStubSmoothness, 0f, 1f);
+                    break;
+                case ".png":
+                    ImGui.Text("Importer  TextureImporter"u8);
+                    ImGui.TextDisabled("Type  Default"u8);
+                    ImGui.TextDisabled("Size  512 x 512"u8);
+                    ImGui.TextDisabled("Format  RGBA 8 bit"u8);
+                    ImGui.Checkbox("sRGB"u8, ref _assetStubSrgb);
+                    ImGui.Checkbox("Generate Mip Maps"u8, ref _assetStubMips);
+                    break;
+                default:
+                    ImGui.TextDisabled("No importer preview for this asset."u8);
+                    break;
+            }
+        }
+
+        ImGui.Spacing();
+        ImGui.BeginDisabled();
+        ImGui.Button("Open##Inspector.Asset"u8, new float2(-1f, 0f));
+        ImGui.EndDisabled();
+    }
+
+    static string AssetTypeName(string extension) => extension.ToLowerInvariant() switch
+    {
+        ".cs" => "Mono Script",
+        ".prefab" => "Prefab",
+        ".mat" => "Material",
+        ".png" => "Texture 2D",
+        _ => "Asset",
+    };
+
+    static string AssetStubGuid(string path)
+    {
+        var hash = path.GetHashCode(StringComparison.Ordinal);
+        return $"{(uint)hash:x8}-{(uint)~hash:x8}-stubguid";
+    }
+
+    void SelectGameObject(int id)
+    {
+        _selectedId = id;
+        _selectedAsset = null;
     }
 
     void DrawConsole()

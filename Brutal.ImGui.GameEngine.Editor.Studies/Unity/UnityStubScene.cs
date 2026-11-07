@@ -15,21 +15,13 @@ sealed class UnityStubScene
 
         var camera = new StubGameObject("Main Camera")
         {
-            Tag = "MainCamera",
             Position = new float3(0f, 1f, -10f),
         };
         camera.Components.Add(new StubCameraComponent());
         camera.Components.Add(new StubAudioListenerComponent());
 
-        var light = new StubGameObject("Directional Light")
-        {
-            Rotation = new float3(50f, -30f, 0f),
-        };
-        light.Components.Add(new StubLightComponent());
-
         var player = new StubGameObject("Player")
         {
-            Tag = "Player",
             Position = new float3(0f, 1f, 0f),
         };
         player.Components.Add(new StubMeshRendererComponent { Color = new float3(0.35f, 0.65f, 0.95f) });
@@ -58,7 +50,6 @@ sealed class UnityStubScene
         environment.AddChild(sphere);
 
         scene.Roots.Add(camera);
-        scene.Roots.Add(light);
         scene.Roots.Add(player);
         scene.Roots.Add(environment);
         return scene;
@@ -105,7 +96,6 @@ sealed class StubGameObject
     public int Id { get; }
     public string Name { get; set; }
     public bool Active { get; set; } = true;
-    public string Tag { get; set; } = "Untagged";
     public string Layer { get; set; } = "Default";
     public float3 Position { get; set; }
     public float3 Rotation { get; set; }
@@ -138,14 +128,6 @@ sealed class StubCameraComponent : StubComponent
     public float NearClip { get; set; } = 0.3f;
     public float FarClip { get; set; } = 1000f;
     public bool Orthographic { get; set; }
-}
-
-sealed class StubLightComponent : StubComponent
-{
-    public override string TypeName => "Light";
-    public int TypeIndex { get; set; } // 0 Directional, 1 Point, 2 Spot
-    public float Intensity { get; set; } = 1f;
-    public float3 Color { get; set; } = new(1f, 0.96f, 0.84f);
 }
 
 sealed class StubMeshRendererComponent : StubComponent
