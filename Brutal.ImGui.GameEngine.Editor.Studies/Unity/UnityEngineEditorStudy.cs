@@ -248,11 +248,19 @@ sealed class UnityEngineEditorStudy
         ImGui.SameLine();
         ImGui.TextDisabled("|"u8);
         ImGui.SameLine();
-        ImGui.RadioButton("Local"u8, ref _gizmoSpace, 0);
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new float2(2f, 0f));
+        if (DrawToolbarIconButton("##Local"u8, iconSize, enabled: true, _gizmoSpace == 0, ToolbarIcon.Local))
+            _gizmoSpace = 0;
+        ImGui.SetItemTooltip("Local"u8);
         ImGui.SameLine();
-        ImGui.RadioButton("World"u8, ref _gizmoSpace, 1);
+        if (DrawToolbarIconButton("##World"u8, iconSize, enabled: true, _gizmoSpace == 1, ToolbarIcon.World))
+            _gizmoSpace = 1;
+        ImGui.SetItemTooltip("World"u8);
         ImGui.SameLine();
-        ImGui.Checkbox("Snap"u8, ref _useSnap);
+        if (DrawToolbarIconButton("##Snap"u8, iconSize, enabled: true, _useSnap, ToolbarIcon.Snap))
+            _useSnap = !_useSnap;
+        ImGui.SetItemTooltip(_useSnap ? "Snap on"u8 : "Snap off"u8);
+        ImGui.PopStyleVar();
 
         var playWidth = iconSize.X * 3f + 4f;
         ImGui.SameLine();
@@ -342,6 +350,15 @@ sealed class UnityEngineEditorStudy
                 break;
             case ToolbarIcon.Scale:
                 DrawScaleIcon(draw, center, extent, color);
+                break;
+            case ToolbarIcon.Local:
+                DrawLocalIcon(draw, center, extent, color);
+                break;
+            case ToolbarIcon.World:
+                DrawWorldIcon(draw, center, extent, color);
+                break;
+            case ToolbarIcon.Snap:
+                DrawSnapIcon(draw, center, extent, color);
                 break;
             case ToolbarIcon.Pause:
             {
@@ -448,6 +465,73 @@ sealed class UnityEngineEditorStudy
         DrawArrowHead(draw, new float2(center.X - outTip, center.Y - outTip), new float2(-1f, -1f), extent * 0.42f, color);
         DrawArrowHead(draw, new float2(center.X + outTip, center.Y - outTip), new float2(1f, -1f), extent * 0.42f, color);
         DrawArrowHead(draw, new float2(center.X - outTip, center.Y + outTip), new float2(-1f, 1f), extent * 0.42f, color);
+    }
+
+    static void DrawLocalIcon(ImDrawListPtr draw, float2 center, float extent, ImColor8 color)
+    {
+        float2 Iso(float x, float y, float z)
+            => center + new float2((x - z) * extent * 0.7f, (x + z) * extent * 0.38f - y * extent * 0.85f);
+
+        var tfl = Iso(-1f, 1f, -1f);
+        var tfr = Iso(1f, 1f, -1f);
+        var tbl = Iso(-1f, 1f, 1f);
+        var tbr = Iso(1f, 1f, 1f);
+        var bfl = Iso(-1f, -1f, -1f);
+        var bfr = Iso(1f, -1f, -1f);
+        var bbr = Iso(1f, -1f, 1f);
+
+        draw.AddLine(tfl, tfr, color, 1.5f);
+        draw.AddLine(tfr, tbr, color, 1.5f);
+        draw.AddLine(tbr, tbl, color, 1.5f);
+        draw.AddLine(tbl, tfl, color, 1.5f);
+        draw.AddLine(tfl, bfl, color, 1.5f);
+        draw.AddLine(tfr, bfr, color, 1.5f);
+        draw.AddLine(tbr, bbr, color, 1.5f);
+        draw.AddLine(bfl, bfr, color, 1.5f);
+        draw.AddLine(bfr, bbr, color, 1.5f);
+    }
+
+    static void DrawWorldIcon(ImDrawListPtr draw, float2 center, float extent, ImColor8 color)
+    {
+        var radius = extent * 1.15f;
+        draw.AddCircle(center, radius, color, 22, 1.6f);
+        DrawEllipse(draw, center, radius, radius * 0.38f, color, 1.4f);
+        DrawEllipse(draw, center, radius * 0.38f, radius, color, 1.4f);
+        draw.AddLine(new float2(center.X, center.Y - radius), new float2(center.X, center.Y + radius), color, 1.4f);
+    }
+
+    static void DrawEllipse(ImDrawListPtr draw, float2 center, float radiusX, float radiusY, ImColor8 color, float thickness)
+    {
+        const int segments = 22;
+        for (var i = 0; i <= segments; i++)
+        {
+            var angle = i / (float)segments * MathF.PI * 2f;
+            draw.PathLineTo(new float2(center.X + MathF.Cos(angle) * radiusX, center.Y + MathF.Sin(angle) * radiusY));
+        }
+
+        draw.PathStroke(color, ImDrawFlags.Closed, thickness);
+    }
+
+    static void DrawSnapIcon(ImDrawListPtr draw, float2 center, float extent, ImColor8 color)
+    {
+        var width = extent * 0.55f;
+        var top = center.Y - extent * 0.15f;
+        var bottom = center.Y + extent * 1.05f;
+        var pole = extent * 0.28f;
+        draw.AddRectFilled(new float2(center.X - width - pole, top), new float2(center.X - width, bottom), color, 1.2f);
+        draw.AddRectFilled(new float2(center.X + width, top), new float2(center.X + width + pole, bottom), color, 1.2f);
+        draw.PathArcTo(new float2(center.X, top), width + pole * 0.5f, MathF.PI, MathF.PI * 2f, 14);
+        draw.PathStroke(color, ImDrawFlags.None, pole);
+        draw.AddLine(
+            new float2(center.X + width + pole * 1.6f, center.Y - extent * 0.55f),
+            new float2(center.X + width + pole * 2.4f, center.Y - extent * 1.05f),
+            color,
+            1.4f);
+        draw.AddLine(
+            new float2(center.X + width + pole * 1.8f, center.Y - extent * 0.15f),
+            new float2(center.X + width + pole * 2.7f, center.Y - extent * 0.45f),
+            color,
+            1.4f);
     }
 
     static void DrawArrowHead(ImDrawListPtr draw, float2 tip, float2 direction, float size, ImColor8 color)
@@ -1165,5 +1249,8 @@ sealed class UnityEngineEditorStudy
         Move,
         Rotate,
         Scale,
+        Local,
+        World,
+        Snap,
     }
 }
