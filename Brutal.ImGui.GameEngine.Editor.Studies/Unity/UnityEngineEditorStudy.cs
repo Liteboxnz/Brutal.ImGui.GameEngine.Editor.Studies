@@ -52,7 +52,7 @@ sealed class UnityEngineEditorStudy
             _selectedId = player.Id;
 
         Log(ConsoleSeverity.Info, "Unity editor study ready. Scene gizmos are ImGuizmo; the rest is stubbed.");
-        Log(ConsoleSeverity.Info, "Scene: W/E/R tools, Local/World, snap. MMB or Hand+LMB orbit, RMB pan, wheel zoom.");
+        Log(ConsoleSeverity.Info, "Scene: RMB look + WASD/QE fly, MMB pan, Alt+LMB orbit, Alt+RMB or wheel dolly, F to focus.");
         Log(ConsoleSeverity.Warning, "Play Mode does not run a player loop — it only advances stub animation.");
     }
 
@@ -708,11 +708,13 @@ sealed class UnityEngineEditorStudy
         var overlayHovered = false;
         if (sceneTools)
         {
-            ManipulateSelected(view, projection);
             overlayHovered = DrawSceneViewModeToggle(origin);
+            var cameraChord = SceneCameraChordActive();
+            if (!cameraChord)
+                ManipulateSelected(view, projection);
             if (!overlayHovered)
                 HandleSceneNavigation();
-            if (!_scene2D)
+            if (!_scene2D && !cameraChord)
             {
                 var cubeSize = new float2(96f, 96f);
                 var cubePos = new float2(max.X - cubeSize.X - 8f, origin.Y + 8f);
@@ -825,26 +827,143 @@ sealed class UnityEngineEditorStudy
         ImGuizmo.PopId();
     }
 
+    static bool SceneCameraChordActive()
+    {
+        var alt = ImGui.GetIO().KeyAlt;
+        return ImGui.IsMouseDown(ImGuiMouseButton.Right)
+               || ImGui.IsMouseDown(ImGuiMouseButton.Middle)
+               || (alt && ImGui.IsMouseDown(ImGuiMouseButton.Left));
+    }
+
     void HandleSceneNavigation()
     {
-        if (!ImGui.IsWindowHovered() || ImGuizmo.IsUsing() || ImGuizmo.IsUsingViewManipulate() || ImGuizmo.IsViewManipulateHovered())
+        var rmb = ImGui.IsMouseDown(ImGuiMouseButton.Right);
+        var mmb = ImGui.IsMouseDown(ImGuiMouseButton.Middle);
+        var lmb = ImGui.IsMouseDown(ImGuiMouseButton.Left);
+        if ((!ImGui.IsWindowHovered() && !rmb && !mmb)
+            || ImGuizmo.IsUsing()
+            || ImGuizmo.IsUsingViewManipulate()
+            || ImGuizmo.IsViewManipulateHovered())
             return;
 
         var io = ImGui.GetIO();
-        var pan = ImGui.IsMouseDragging(ImGuiMouseButton.Right)
-                  || (_scene2D && ImGui.IsMouseDragging(ImGuiMouseButton.Middle))
-                  || (_gizmoMode == 0 && ImGui.IsMouseDragging(ImGuiMouseButton.Left));
-        var orbit = !_scene2D && ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
-        if (orbit)
-            OrbitSceneCamera(io.MouseDelta);
-        else if (pan)
-            PanSceneCamera(io.MouseDelta);
+        var alt = io.KeyAlt;
+        var delta = io.MouseDelta;
 
-        if (io.MouseWheel != 0f)
+        if (_scene2D)
         {
-            _sceneFocusDistance = Math.Clamp(_sceneFocusDistance * (1f - io.MouseWheel * 0.1f), 1.5f, 80f);
-            RebuildSceneView();
+            if (ImGui.IsMouseDragging(ImGuiMouseButton.Middle)
+                || ImGui.IsMouseDragging(ImGuiMouseButton.Right)
+                || (_gizmoMode == 0 && ImGui.IsMouseDragging(ImGuiMouseButton.Left))
+                || (alt && ImGui.IsMouseDragging(ImGuiMouseButton.Left)))
+                PanSceneCamera(delta);
+            DollySceneCamera(io.MouseWheel);
+            return;
         }
+
+        if (alt && ImGui.IsMouseDragging(ImGuiMouseButton.Left))
+            OrbitSceneCamera(delta);
+        else if (alt && rmb)
+            DollySceneCamera(-delta.Y * 0.04f);
+        else if (mmb)
+            PanSceneCamera(delta);
+        else if (lmb && rmb)
+            TruckSceneCamera(delta);
+        else if (rmb)
+        {
+            if (delta.X != 0f || delta.Y != 0f)
+                LookSceneCamera(delta);
+            FlySceneCamera(io.DeltaTime);
+        }
+        else if (_gizmoMode == 0 && ImGui.IsMouseDragging(ImGuiMouseButton.Left))
+            PanSceneCamera(delta);
+
+        DollySceneCamera(io.MouseWheel);
+
+        if (ImGui.IsWindowHovered() && ImGui.IsKeyPressed(ImGuiKey.F, false))
+            FocusSelectedInScene();
+    }
+
+    void LookSceneCamera(float2 mouseDelta)
+    {
+        var eye = SceneCameraPosition();
+        var forward = _sceneTarget - eye;
+        var distance = MathF.Max(0.5f, forward.Length());
+        var yaw = MathF.Atan2(forward.X, forward.Z);
+        var pitch = MathF.Asin(Math.Clamp(forward.Y / distance, -1f, 1f));
+        yaw += mouseDelta.X * 0.005f;
+        pitch = Math.Clamp(pitch - mouseDelta.Y * 0.005f, -1.4f, 1.4f);
+        var direction = new float3(
+            MathF.Sin(yaw) * MathF.Cos(pitch),
+            MathF.Sin(pitch),
+            MathF.Cos(yaw) * MathF.Cos(pitch));
+        _sceneTarget = eye + direction * _sceneFocusDistance;
+        _sceneView = float4x4.CreateLookAt(eye, _sceneTarget, new float3(0f, 1f, 0f));
+    }
+
+    void FlySceneCamera(float dt)
+    {
+        if (!float4x4.Invert(_sceneView, out var inverse))
+            return;
+
+        var right = new float3(inverse.X.X, inverse.X.Y, inverse.X.Z);
+        var up = new float3(0f, 1f, 0f);
+        var forward = float3.Normalize(new float3(-inverse.Z.X, -inverse.Z.Y, -inverse.Z.Z));
+        var move = float3.Zero;
+        if (ImGui.IsKeyDown(ImGuiKey.W))
+            move += forward;
+        if (ImGui.IsKeyDown(ImGuiKey.S))
+            move -= forward;
+        if (ImGui.IsKeyDown(ImGuiKey.D))
+            move += right;
+        if (ImGui.IsKeyDown(ImGuiKey.A))
+            move -= right;
+        if (ImGui.IsKeyDown(ImGuiKey.E))
+            move += up;
+        if (ImGui.IsKeyDown(ImGuiKey.Q))
+            move -= up;
+        if (move.LengthSquared() < 0.0001f)
+            return;
+
+        var speed = _sceneFocusDistance * (ImGui.GetIO().KeyShift ? 2.4f : 0.9f) * MathF.Max(dt, 0.0001f);
+        var translation = float3.Normalize(move) * speed;
+        var eye = SceneCameraPosition() + translation;
+        _sceneTarget += translation;
+        _sceneView = float4x4.CreateLookAt(eye, _sceneTarget, new float3(0f, 1f, 0f));
+    }
+
+    void TruckSceneCamera(float2 mouseDelta)
+    {
+        if (!float4x4.Invert(_sceneView, out var inverse))
+            return;
+
+        var right = new float3(inverse.X.X, inverse.X.Y, inverse.X.Z);
+        var forward = float3.Normalize(new float3(-inverse.Z.X, -inverse.Z.Y, -inverse.Z.Z));
+        var speed = _sceneFocusDistance * 0.0015f;
+        var translation = forward * (-mouseDelta.Y * speed) + right * (mouseDelta.X * speed);
+        var eye = SceneCameraPosition() + translation;
+        _sceneTarget += translation;
+        _sceneView = float4x4.CreateLookAt(eye, _sceneTarget, new float3(0f, 1f, 0f));
+    }
+
+    void DollySceneCamera(float amount)
+    {
+        if (amount == 0f)
+            return;
+
+        _sceneFocusDistance = Math.Clamp(_sceneFocusDistance * (1f - amount * 0.1f), 1.5f, 80f);
+        RebuildSceneView();
+    }
+
+    void FocusSelectedInScene()
+    {
+        var selected = _scene.Find(_selectedId);
+        if (selected is null)
+            return;
+
+        _sceneTarget = selected.Position;
+        _sceneFocusDistance = Math.Clamp(MathF.Max(selected.Scale.Length(), 1f) * 4f, 3f, 40f);
+        RebuildSceneView();
     }
 
     void OrbitSceneCamera(float2 mouseDelta)
@@ -975,8 +1094,11 @@ sealed class UnityEngineEditorStudy
             return;
         }
 
+        ImGui.PushID("Inspector"u8);
+        ImGui.PushID(selected.Id);
+
         var active = selected.Active;
-        if (ImGui.Checkbox("##active"u8, ref active))
+        if (ImGui.Checkbox("##Inspector.Active"u8, ref active))
             selected.Active = active;
         ImGui.SameLine();
         ImGui.Text(selected.Name);
@@ -985,46 +1107,59 @@ sealed class UnityEngineEditorStudy
 
         var tagIndex = Math.Max(0, Array.IndexOf(Tags, selected.Tag));
         var layerIndex = Math.Max(0, Array.IndexOf(Layers, selected.Layer));
-        if (DrawCombo("Tag"u8, ref tagIndex, Tags))
+        if (DrawCombo("Tag##Inspector"u8, ref tagIndex, Tags))
             selected.Tag = Tags[tagIndex];
         ImGui.SameLine();
-        if (DrawCombo("Layer"u8, ref layerIndex, Layers))
+        if (DrawCombo("Layer##Inspector"u8, ref layerIndex, Layers))
             selected.Layer = Layers[layerIndex];
 
         ImGui.Separator();
-        if (ImGui.CollapsingHeader("Transform"u8, ImGuiTreeNodeFlags.DefaultOpen))
+        ImGui.PushID("Transform"u8);
+        if (ImGui.CollapsingHeader("Transform##Inspector"u8, ImGuiTreeNodeFlags.DefaultOpen))
         {
             var position = selected.Position;
             var rotation = selected.Rotation;
             var scale = selected.Scale;
             ImGui.PushItemWidth(-1f);
-            if (ImGui.DragFloat3("Position"u8, ref position, 0.05f))
+            if (ImGui.DragFloat3("Position##Inspector.Transform"u8, ref position, 0.05f))
                 selected.Position = position;
-            if (ImGui.DragFloat3("Rotation"u8, ref rotation, 0.5f))
+            if (ImGui.DragFloat3("Rotation##Inspector.Transform"u8, ref rotation, 0.5f))
                 selected.Rotation = rotation;
-            if (ImGui.DragFloat3("Scale"u8, ref scale, 0.05f))
+            if (ImGui.DragFloat3("Scale##Inspector.Transform"u8, ref scale, 0.05f))
                 selected.Scale = scale;
             ImGui.PopItemWidth();
         }
 
-        foreach (var component in selected.Components)
-            DrawComponent(component);
+        ImGui.PopID();
+
+        for (var i = 0; i < selected.Components.Count; i++)
+        {
+            ImGui.PushID(i);
+            DrawComponent(selected.Components[i]);
+            ImGui.PopID();
+        }
 
         ImGui.Spacing();
-        if (ImGui.Button("Add Component"u8, new float2(-1f, 0f)))
+        if (ImGui.Button("Add Component##Inspector"u8, new float2(-1f, 0f)))
             Log(ConsoleSeverity.Warning, "Add Component menu is stubbed.");
 
+        ImGui.PopID();
+        ImGui.PopID();
         ImGui.End();
     }
 
     static void DrawComponent(StubComponent component)
     {
+        ImGui.PushID(component.TypeName);
         var enabled = component.Enabled;
         var flags = ImGuiTreeNodeFlags.DefaultOpen | ImGuiTreeNodeFlags.AllowOverlap;
-        if (!ImGui.CollapsingHeader($"{component.TypeName}", flags))
+        if (!ImGui.CollapsingHeader($"{component.TypeName}##Inspector.Component", flags))
+        {
+            ImGui.PopID();
             return;
+        }
 
-        ImGui.Checkbox("Enabled"u8, ref enabled);
+        ImGui.Checkbox("Enabled##Inspector.Component"u8, ref enabled);
         component.Enabled = enabled;
 
         switch (component)
@@ -1034,10 +1169,10 @@ sealed class UnityEngineEditorStudy
                 var near = camera.NearClip;
                 var far = camera.FarClip;
                 var ortho = camera.Orthographic;
-                ImGui.SliderFloat("Field of View"u8, ref fov, 1f, 179f);
-                ImGui.DragFloat("Near"u8, ref near, 0.01f, 0.01f, 10f);
-                ImGui.DragFloat("Far"u8, ref far, 1f, 1f, 5000f);
-                ImGui.Checkbox("Orthographic"u8, ref ortho);
+                ImGui.SliderFloat("Field of View##Inspector.Camera"u8, ref fov, 1f, 179f);
+                ImGui.DragFloat("Near##Inspector.Camera"u8, ref near, 0.01f, 0.01f, 10f);
+                ImGui.DragFloat("Far##Inspector.Camera"u8, ref far, 1f, 1f, 5000f);
+                ImGui.Checkbox("Orthographic##Inspector.Camera"u8, ref ortho);
                 camera.FieldOfView = fov;
                 camera.NearClip = near;
                 camera.FarClip = far;
@@ -1048,9 +1183,9 @@ sealed class UnityEngineEditorStudy
                 var type = light.TypeIndex;
                 var intensity = light.Intensity;
                 var color = light.Color;
-                DrawCombo("Type"u8, ref type, LightTypes);
-                ImGui.DragFloat("Intensity"u8, ref intensity, 0.02f, 0f, 8f);
-                ImGui.ColorEdit3("Color"u8, ref color);
+                DrawCombo("Type##Inspector.Light"u8, ref type, LightTypes);
+                ImGui.DragFloat("Intensity##Inspector.Light"u8, ref intensity, 0.02f, 0f, 8f);
+                ImGui.ColorEdit3("Color##Inspector.Light"u8, ref color);
                 light.TypeIndex = type;
                 light.Intensity = intensity;
                 light.Color = color;
@@ -1059,8 +1194,8 @@ sealed class UnityEngineEditorStudy
             case StubMeshRendererComponent renderer:
                 var meshColor = renderer.Color;
                 var shadows = renderer.CastShadows;
-                ImGui.ColorEdit3("Albedo"u8, ref meshColor);
-                ImGui.Checkbox("Cast Shadows"u8, ref shadows);
+                ImGui.ColorEdit3("Albedo##Inspector.MeshRenderer"u8, ref meshColor);
+                ImGui.Checkbox("Cast Shadows##Inspector.MeshRenderer"u8, ref shadows);
                 renderer.Color = meshColor;
                 renderer.CastShadows = shadows;
                 break;
@@ -1068,12 +1203,14 @@ sealed class UnityEngineEditorStudy
             case StubMonoBehaviourComponent script:
                 var speed = script.MoveSpeed;
                 var jump = script.JumpHeight;
-                ImGui.DragFloat("Move Speed"u8, ref speed, 0.05f, 0f, 30f);
-                ImGui.DragFloat("Jump Height"u8, ref jump, 0.05f, 0f, 10f);
+                ImGui.DragFloat("Move Speed##Inspector.Script"u8, ref speed, 0.05f, 0f, 30f);
+                ImGui.DragFloat("Jump Height##Inspector.Script"u8, ref jump, 0.05f, 0f, 10f);
                 script.MoveSpeed = speed;
                 script.JumpHeight = jump;
                 break;
         }
+
+        ImGui.PopID();
     }
 
     static bool DrawCombo(ImString label, ref int index, string[] items)
