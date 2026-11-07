@@ -249,13 +249,9 @@ sealed class UnityEngineEditorStudy
         ImGui.TextDisabled("|"u8);
         ImGui.SameLine();
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new float2(2f, 0f));
-        if (DrawToolbarIconButton("##Local"u8, iconSize, enabled: true, _gizmoSpace == 0, ToolbarIcon.Local))
-            _gizmoSpace = 0;
-        ImGui.SetItemTooltip("Local"u8);
-        ImGui.SameLine();
-        if (DrawToolbarIconButton("##World"u8, iconSize, enabled: true, _gizmoSpace == 1, ToolbarIcon.World))
-            _gizmoSpace = 1;
-        ImGui.SetItemTooltip("World"u8);
+        ImGui.SetNextItemWidth(88f);
+        ImGui.Combo("##GizmoSpace"u8, ref _gizmoSpace, "Local\0World\0"u8);
+        ImGui.SetItemTooltip("Coordinate space"u8);
         ImGui.SameLine();
         if (DrawToolbarIconButton("##Snap"u8, iconSize, enabled: true, _useSnap, ToolbarIcon.Snap))
             _useSnap = !_useSnap;
@@ -350,12 +346,6 @@ sealed class UnityEngineEditorStudy
                 break;
             case ToolbarIcon.Scale:
                 DrawScaleIcon(draw, center, extent, color);
-                break;
-            case ToolbarIcon.Local:
-                DrawLocalIcon(draw, center, extent, color);
-                break;
-            case ToolbarIcon.World:
-                DrawWorldIcon(draw, center, extent, color);
                 break;
             case ToolbarIcon.Snap:
                 DrawSnapIcon(draw, center, extent, color);
@@ -465,51 +455,6 @@ sealed class UnityEngineEditorStudy
         DrawArrowHead(draw, new float2(center.X - outTip, center.Y - outTip), new float2(-1f, -1f), extent * 0.42f, color);
         DrawArrowHead(draw, new float2(center.X + outTip, center.Y - outTip), new float2(1f, -1f), extent * 0.42f, color);
         DrawArrowHead(draw, new float2(center.X - outTip, center.Y + outTip), new float2(-1f, 1f), extent * 0.42f, color);
-    }
-
-    static void DrawLocalIcon(ImDrawListPtr draw, float2 center, float extent, ImColor8 color)
-    {
-        float2 Iso(float x, float y, float z)
-            => center + new float2((x - z) * extent * 0.7f, (x + z) * extent * 0.38f - y * extent * 0.85f);
-
-        var tfl = Iso(-1f, 1f, -1f);
-        var tfr = Iso(1f, 1f, -1f);
-        var tbl = Iso(-1f, 1f, 1f);
-        var tbr = Iso(1f, 1f, 1f);
-        var bfl = Iso(-1f, -1f, -1f);
-        var bfr = Iso(1f, -1f, -1f);
-        var bbr = Iso(1f, -1f, 1f);
-
-        draw.AddLine(tfl, tfr, color, 1.5f);
-        draw.AddLine(tfr, tbr, color, 1.5f);
-        draw.AddLine(tbr, tbl, color, 1.5f);
-        draw.AddLine(tbl, tfl, color, 1.5f);
-        draw.AddLine(tfl, bfl, color, 1.5f);
-        draw.AddLine(tfr, bfr, color, 1.5f);
-        draw.AddLine(tbr, bbr, color, 1.5f);
-        draw.AddLine(bfl, bfr, color, 1.5f);
-        draw.AddLine(bfr, bbr, color, 1.5f);
-    }
-
-    static void DrawWorldIcon(ImDrawListPtr draw, float2 center, float extent, ImColor8 color)
-    {
-        var radius = extent * 1.15f;
-        draw.AddCircle(center, radius, color, 22, 1.6f);
-        DrawEllipse(draw, center, radius, radius * 0.38f, color, 1.4f);
-        DrawEllipse(draw, center, radius * 0.38f, radius, color, 1.4f);
-        draw.AddLine(new float2(center.X, center.Y - radius), new float2(center.X, center.Y + radius), color, 1.4f);
-    }
-
-    static void DrawEllipse(ImDrawListPtr draw, float2 center, float radiusX, float radiusY, ImColor8 color, float thickness)
-    {
-        const int segments = 22;
-        for (var i = 0; i <= segments; i++)
-        {
-            var angle = i / (float)segments * MathF.PI * 2f;
-            draw.PathLineTo(new float2(center.X + MathF.Cos(angle) * radiusX, center.Y + MathF.Sin(angle) * radiusY));
-        }
-
-        draw.PathStroke(color, ImDrawFlags.Closed, thickness);
     }
 
     static void DrawSnapIcon(ImDrawListPtr draw, float2 center, float extent, ImColor8 color)
@@ -822,7 +767,7 @@ sealed class UnityEngineEditorStudy
     {
         if (node.Active && node.Components.OfType<StubMeshRendererComponent>().Any())
         {
-            var model = ImGuizmo.RecomposeMatrixFromComponents(node.Position, node.Rotation, node.Scale);
+            var model = GetWorldMatrix(node);
             if (float4x4.Invert(model, out var inverse)
                 && IntersectLocalCube(rayOrigin, rayDirection, inverse, model, out var distance)
                 && distance < bestDistance)
@@ -920,15 +865,10 @@ sealed class UnityEngineEditorStudy
                 _ => new float3(0.5f, 0.5f, 0.5f),
             };
 
-        var matrix = ImGuizmo.RecomposeMatrixFromComponents(selected.Position, selected.Rotation, selected.Scale);
+        var matrix = GetWorldMatrix(selected);
         ImGuizmo.PushId(selected.Id);
         if (ImGuizmo.Manipulate(view, projection, operation, mode, ref matrix, snap))
-        {
-            ImGuizmo.DecomposeMatrixToComponents(matrix, out var translation, out var rotation, out var scale);
-            selected.Position = translation;
-            selected.Rotation = rotation;
-            selected.Scale = scale;
-        }
+            SetWorldMatrix(selected, matrix);
 
         ImGuizmo.PopId();
     }
@@ -1067,8 +1007,9 @@ sealed class UnityEngineEditorStudy
         if (selected is null)
             return;
 
-        _sceneTarget = selected.Position;
-        _sceneFocusDistance = Math.Clamp(MathF.Max(selected.Scale.Length(), 1f) * 4f, 3f, 40f);
+        ImGuizmo.DecomposeMatrixToComponents(GetWorldMatrix(selected), out var worldPosition, out _, out var worldScale);
+        _sceneTarget = worldPosition;
+        _sceneFocusDistance = Math.Clamp(MathF.Max(worldScale.Length(), 1f) * 4f, 3f, 40f);
         RebuildSceneView();
     }
 
@@ -1138,15 +1079,16 @@ sealed class UnityEngineEditorStudy
         if (cameraObject is null)
             return _sceneView;
 
-        var yaw = cameraObject.Rotation.Y * (MathF.PI / 180f);
-        var pitch = cameraObject.Rotation.X * (MathF.PI / 180f);
+        ImGuizmo.DecomposeMatrixToComponents(GetWorldMatrix(cameraObject), out var position, out var rotation, out _);
+        var yaw = rotation.Y * (MathF.PI / 180f);
+        var pitch = rotation.X * (MathF.PI / 180f);
         var forward = new float3(
             MathF.Sin(yaw) * MathF.Cos(pitch),
             -MathF.Sin(pitch),
             MathF.Cos(yaw) * MathF.Cos(pitch));
         if (forward.LengthSquared() < 0.0001f)
             forward = new float3(0f, 0f, 1f);
-        return float4x4.CreateLookAt(cameraObject.Position, cameraObject.Position + float3.Normalize(forward), new float3(0f, 1f, 0f));
+        return float4x4.CreateLookAt(position, position + float3.Normalize(forward), new float3(0f, 1f, 0f));
     }
 
     static float4x4 BuildProjection(float aspect, StubCameraComponent? camera)
@@ -1170,10 +1112,31 @@ sealed class UnityEngineEditorStudy
     void CollectCubeMatrices(StubGameObject node)
     {
         if (node.Active && node.Components.OfType<StubMeshRendererComponent>().Any())
-            _cubeMatrices.Add(ImGuizmo.RecomposeMatrixFromComponents(node.Position, node.Rotation, node.Scale));
+            _cubeMatrices.Add(GetWorldMatrix(node));
 
         foreach (var child in node.Children)
             CollectCubeMatrices(child);
+    }
+
+    static float4x4 GetLocalMatrix(StubGameObject node)
+        => ImGuizmo.RecomposeMatrixFromComponents(node.Position, node.Rotation, node.Scale);
+
+    static float4x4 GetWorldMatrix(StubGameObject node)
+    {
+        var local = GetLocalMatrix(node);
+        return node.Parent is null ? local : local * GetWorldMatrix(node.Parent);
+    }
+
+    static void SetWorldMatrix(StubGameObject node, float4x4 world)
+    {
+        var local = world;
+        if (node.Parent is not null && float4x4.Invert(GetWorldMatrix(node.Parent), out var inverseParent))
+            local = world * inverseParent;
+
+        ImGuizmo.DecomposeMatrixToComponents(local, out var translation, out var rotation, out var scale);
+        node.Position = translation;
+        node.Rotation = rotation;
+        node.Scale = scale;
     }
 
     static string GizmoName(int mode) => mode switch
@@ -1227,6 +1190,8 @@ sealed class UnityEngineEditorStudy
             var rotation = selected.Rotation;
             var scale = selected.Scale;
             ImGui.PushItemWidth(-1f);
+            if (selected.Parent is not null)
+                ImGui.TextDisabled($"Parent  {selected.Parent.Name}");
             if (ImGui.DragFloat3("Position##Inspector.Transform"u8, ref position, 0.05f))
                 selected.Position = position;
             if (ImGui.DragFloat3("Rotation##Inspector.Transform"u8, ref rotation, 0.5f))
@@ -1492,8 +1457,6 @@ sealed class UnityEngineEditorStudy
         Move,
         Rotate,
         Scale,
-        Local,
-        World,
         Snap,
     }
 }

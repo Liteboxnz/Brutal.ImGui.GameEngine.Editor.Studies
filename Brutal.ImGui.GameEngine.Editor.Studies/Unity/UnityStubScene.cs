@@ -53,9 +53,9 @@ sealed class UnityStubScene
         sphere.Components.Add(new StubMeshRendererComponent { Color = new float3(0.9f, 0.85f, 0.3f) });
 
         var environment = new StubGameObject("Environment");
-        environment.Children.Add(ground);
-        environment.Children.Add(cube);
-        environment.Children.Add(sphere);
+        environment.AddChild(ground);
+        environment.AddChild(cube);
+        environment.AddChild(sphere);
 
         scene.Roots.Add(camera);
         scene.Roots.Add(light);
@@ -110,8 +110,19 @@ sealed class StubGameObject
     public float3 Position { get; set; }
     public float3 Rotation { get; set; }
     public float3 Scale { get; set; } = new(1f, 1f, 1f);
+    public StubGameObject? Parent { get; private set; }
     public List<StubGameObject> Children { get; } = [];
     public List<StubComponent> Components { get; } = [];
+
+    public void AddChild(StubGameObject child)
+    {
+        if (child.Parent == this)
+            return;
+
+        child.Parent?.Children.Remove(child);
+        child.Parent = this;
+        Children.Add(child);
+    }
 }
 
 abstract class StubComponent
